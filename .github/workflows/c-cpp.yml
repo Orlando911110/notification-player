@@ -49,7 +49,8 @@ jobs:
         
     - name: Install cross-compilation toolchain
       run: |
-        # 安装交叉编译工具链（从Ubuntu主仓库）
+        # 安装交叉编译工具链
+        sudo apt-get update
         sudo apt-get install -y \
           gcc-12-mips64el-linux-gnuabi64 \
           g++-12-mips64el-linux-gnuabi64 \
@@ -65,7 +66,7 @@ jobs:
           wget \
           curl \
           openssl \
-          libssl-dev || true
+          libssl-dev
         
         # 创建软链接
         sudo ln -sf /usr/bin/mips64el-linux-gnuabi64-gcc-12 /usr/bin/mips64el-linux-gnuabi64-gcc 2>/dev/null || true
@@ -83,81 +84,69 @@ jobs:
         which mips64el-linux-gnuabi64-gcc || echo "gcc not found"
         mips64el-linux-gnuabi64-gcc --version 2>/dev/null || echo "gcc version check failed"
         
-    - name: Install MIPS64el dependencies from all sources
+    - name: Install MIPS64el libraries from Ubuntu ports
       run: |
-        echo "=== 从多源安装MIPS64el依赖 ==="
+        echo "=== 从Ubuntu ports安装MIPS64el库 ==="
         
         # 创建依赖目录
         mkdir -p deps/mips64el/usr/lib/notification-client
         mkdir -p deps/mips64el/usr/lib/notification-client/bin
-        mkdir -p deps/mips64el/usr/include
         
-        # 尝试从不同源安装OpenSSL
-        echo "尝试安装OpenSSL (MIPS64el)..."
-        
-        # 尝试从Ubuntu ports安装
+        # 尝试安装MIPS64el库
         sudo apt-get install -y \
-          libssl-dev:mips64el \
           libssl3:mips64el \
+          libc6:mips64el \
           libc6-dev:mips64el \
-          libpulse-dev:mips64el \
-          libasound2-dev:mips64el \
-          libjson-c-dev:mips64el 2>/dev/null || true
+          libpulse0:mips64el \
+          libasound2:mips64el \
+          libjson-c5:mips64el 2>/dev/null || true
         
-        # 如果失败，从Debian ports安装
-        sudo apt-get install -y \
-          libssl-dev:mips64el \
-          libssl3:mips64el \
-          libc6-dev:mips64el 2>/dev/null || true
-        
-        # 复制已安装的库
-        echo "=== 复制MIPS64el库 ==="
-        PATHS="/usr/lib/mips64el-linux-gnuabi64 /usr/mips64el-linux-gnuabi64/lib"
-        for path in $PATHS; do
-          if [ -d "$path" ]; then
-            echo "Checking: $path"
-            find "$path" -name "*.so*" -type f 2>/dev/null | while read lib; do
-              echo "Copying: $lib"
-              cp -v "$lib" deps/mips64el/usr/lib/notification-client/ 2>/dev/null || true
-            done
-          fi
-        done
-        
-        # 复制头文件
-        HEADER_PATHS="/usr/include/mips64el-linux-gnuabi64 /usr/mips64el-linux-gnuabi64/include"
-        for path in $HEADER_PATHS; do
-          if [ -d "$path" ]; then
-            echo "Copying headers from: $path"
-            cp -r "$path"/* deps/mips64el/usr/include/ 2>/dev/null || true
-          fi
-        done
-        
-        # 从Ubuntu ports直接下载OpenSSL deb包（备用方案）
-        echo "=== 从Ubuntu ports下载OpenSSL deb包 ==="
+        # 从Ubuntu ports直接下载OpenSSL库（核心）
+        echo "=== 从Ubuntu ports下载OpenSSL库 ==="
         cd /tmp
         wget -q http://ports.ubuntu.com/ubuntu-ports/pool/main/o/openssl/libssl3_3.0.2-0ubuntu1_mips64el.deb -O libssl3.deb 2>/dev/null || true
         if [ -f libssl3.deb ]; then
           dpkg -x libssl3.deb temp_ssl/ 2>/dev/null || true
           if [ -d temp_ssl/usr/lib/mips64el-linux-gnuabi64 ]; then
+            mkdir -p $OLDPWD/deps/mips64el/usr/lib/notification-client
             cp -r temp_ssl/usr/lib/mips64el-linux-gnuabi64/* $OLDPWD/deps/mips64el/usr/lib/notification-client/ 2>/dev/null || true
+            echo "OpenSSL库提取成功"
           fi
           rm -rf temp_ssl libssl3.deb
         fi
         
-        wget -q http://ports.ubuntu.com/ubuntu-ports/pool/main/o/openssl/libssl-dev_3.0.2-0ubuntu1_mips64el.deb -O libssl-dev.deb 2>/dev/null || true
-        if [ -f libssl-dev.deb ]; then
-          dpkg -x libssl-dev.deb temp_ssl_dev/ 2>/dev/null || true
-          if [ -d temp_ssl_dev/usr/include/mips64el-linux-gnuabi64/openssl ]; then
-            mkdir -p $OLDPWD/deps/mips64el/usr/include
-            cp -r temp_ssl_dev/usr/include/mips64el-linux-gnuabi64/openssl $OLDPWD/deps/mips64el/usr/include/ 2>/dev/null || true
+        # 下载libcrypto
+        wget -q http://ports.ubuntu.com/ubuntu-ports/pool/main/o/openssl/libcrypto3_3.0.2-0ubuntu1_mips64el.deb -O libcrypto3.deb 2>/dev/null || true
+        if [ -f libcrypto3.deb ]; then
+          dpkg -x libcrypto3.deb temp_crypto/ 2>/dev/null || true
+          if [ -d temp_crypto/usr/lib/mips64el-linux-gnuabi64 ]; then
+            cp -r temp_crypto/usr/lib/mips64el-linux-gnuabi64/* $OLDPWD/deps/mips64el/usr/lib/notification-client/ 2>/dev/null || true
+            echo "libcrypto提取成功"
           fi
-          rm -rf temp_ssl_dev libssl-dev.deb
+          rm -rf temp_crypto libcrypto3.deb
         fi
+        
         cd $OLDPWD
+        
+        # 从系统复制OpenSSL头文件（头文件架构无关）
+        echo "=== 复制OpenSSL头文件 ==="
+        if [ -d "/usr/include/openssl" ]; then
+          mkdir -p deps/mips64el/usr/include
+          cp -r /usr/include/openssl deps/mips64el/usr/include/
+          echo "OpenSSL头文件复制完成"
+        fi
+        
+        # 复制其他已安装的MIPS64el库
+        echo "=== 复制MIPS64el库 ==="
+        if [ -d "/usr/lib/mips64el-linux-gnuabi64" ]; then
+          find /usr/lib/mips64el-linux-gnuabi64 -name "*.so*" -type f 2>/dev/null | while read lib; do
+            echo "Copying: $lib"
+            cp -v "$lib" deps/mips64el/usr/lib/notification-client/ 2>/dev/null || true
+          done
+        fi
         
         echo "=== 依赖下载完成 ==="
         echo "库文件数量: $(ls -1 deps/mips64el/usr/lib/notification-client/*.so* 2>/dev/null | wc -l)"
-        echo "头文件: $(ls -1 deps/mips64el/usr/include/ 2>/dev/null | head -10)"
         
     - name: Download and extract audio tools
       run: |
@@ -188,7 +177,7 @@ jobs:
         fi
         cd $OLDPWD
         
-        # 备用：使用系统工具（非MIPS64el，仅作为fallback）
+        # 备用：使用系统工具
         if [ ! -f deps/mips64el/usr/lib/notification-client/bin/aplay ]; then
           echo "aplay not downloaded, trying system aplay..."
           if [ -f /usr/bin/aplay ]; then
@@ -520,6 +509,8 @@ jobs:
         #include <errno.h>
         #include <fcntl.h>
         #include <poll.h>
+        
+        // 使用系统OpenSSL头文件
         #include <openssl/ssl.h>
         #include <openssl/err.h>
         
@@ -1021,12 +1012,10 @@ jobs:
         echo "AR=mips64el-linux-gnuabi64-ar" >> $GITHUB_ENV
         echo "STRIP=mips64el-linux-gnuabi64-strip" >> $GITHUB_ENV
         
-        # 添加头文件路径
-        if [ -d "$PWD/deps/mips64el/usr/include" ]; then
-          echo "CPPFLAGS=-I$PWD/deps/mips64el/usr/include" >> $GITHUB_ENV
-        fi
+        # 使用系统OpenSSL头文件
+        echo "CPPFLAGS=-I/usr/include" >> $GITHUB_ENV
         
-        # 添加库路径
+        # 添加自定义库路径
         if [ -d "$PWD/deps/mips64el/usr/lib/notification-client" ]; then
           echo "LDFLAGS=-L$PWD/deps/mips64el/usr/lib/notification-client -lpthread -ldl -lssl -lcrypto" >> $GITHUB_ENV
         fi
@@ -1044,11 +1033,6 @@ jobs:
         
         CFLAGS = -Wall -O2 -march=mips64r2 -D_GNU_SOURCE -pthread
         LDFLAGS = -lpthread -ldl -lssl -lcrypto
-        
-        # 添加自定义头文件路径
-        ifneq ($(wildcard deps/mips64el/usr/include),)
-            CFLAGS += -I$(PWD)/deps/mips64el/usr/include
-        endif
         
         # 添加自定义库路径
         ifneq ($(wildcard deps/mips64el/usr/lib/notification-client),)
