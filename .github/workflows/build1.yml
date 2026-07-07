@@ -1,0 +1,406 @@
+name: Build MIPS64el DEB Package (Static Build)
+
+on:
+  push:
+    branches: [ main, master, develop ]
+    tags:
+      - 'v*'
+  pull_request:
+    branches: [ main, master ]
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+      
+    - name: Install cross-compilation toolchain
+      run: |
+        sudo apt-get update
+        sudo apt-get install -y \
+          gcc-mips64el-linux-gnuabi64 \
+          g++-mips64el-linux-gnuabi64 \
+          binutils-mips64el-linux-gnuabi64 \
+          dpkg-dev \
+          debhelper \
+          fakeroot \
+          file \
+          lintian \
+          sox \
+          libsox-dev \
+          build-essential \
+          cmake \
+          wget \
+          git
+        
+        # 验证交叉编译器
+        mips64el-linux-gnuabi64-gcc --version
+        
+    - name: Build static dependencies for MIPS64el
+      run: |
+        # 创建依赖构建目录
+        mkdir -p deps-build
+        cd deps-build
+        
+        # 设置交叉编译环境
+        export CC=mips64el-linux-gnuabi64-gcc
+        export CXX=mips64el-linux-gnuabi64-g++
+        export AR=mips64el-linux-gnuabi64-ar
+        export RANLIB=mips64el-linux-gnuabi64-ranlib
+        export PKG_CONFIG_PATH=/usr/local/lib/pkgconfig
+        
+        # 1. 构建 libjson-c (静态库)
+        echo "=== Building libjson-c ==="
+        wget -q https://s3.amazonaws.com/json-c_releases/releases/json-c-0.16.tar.gz
+        tar -xzf json-c-0.16.tar.gz
+        cd json-c-0.16
+        mkdir build && cd build
+        cmake .. \
+          -DCMAKE_C_COMPILER=${CC} \
+          -DCMAKE_CXX_COMPILER=${CXX} \
+          -DCMAKE_AR=${AR} \
+          -DCMAKE_RANLIB=${RANLIB} \
+          -DBUILD_SHARED_LIBS=OFF \
+          -DCMAKE_C_FLAGS="-march=mips64el -mtune=mips64el -static" \
+          -DCMAKE_INSTALL_PREFIX=/usr/local/mips64el
+        make -j$(nproc)
+        sudo make install
+        cd ../..
+        
+        # 2. 构建 libasound (ALSA) - 简化版
+        echo "=== Building alsa-lib ==="
+        wget -q https://www.alsa-project.org/files/pub/lib/alsa-lib-1.2.8.tar.bz2
+        tar -xjf alsa-lib-1.2.8.tar.bz2
+        cd alsa-lib-1.2.8
+        ./configure \
+          --host=mips64el-linux-gnuabi64 \
+          --prefix=/usr/local/mips64el \
+          --enable-static \
+          --disable-shared \
+          CFLAGS="-march=mips64el -mtune=mips64el"
+        make -j$(nproc)
+        sudo make install
+        cd ..
+        
+        # 3. 构建 libpulse - 简化版本（只包含必要的头文件）
+        echo "=== Setting up PulseAudio headers ==="
+        wget -q https://www.freedesktop.org/software/pulseaudio/releases/pulseaudio-16.1.tar.xz
+        tar -xf pulseaudio-16.1.tar.xz
+        cd pulseaudio-16.1
+        ./configure \
+          --host=mips64el-linux-gnuabi64 \
+          --prefix=/usr/local/mips64el \
+          --enable-static \
+          --disable-shared \
+          --disable-alsa \
+          --disable-oss-output \
+          --disable-oss-wrapper \
+          CFLAGS="-march=mips64el -mtune=mips64el"
+        make -j$(nproc)
+        sudo make install
+        cd ..
+        
+        echo "=== Dependencies built successfully ==="
+        
+    - name: Create simplified audio implementation
+      run: |
+        # 创建使用系统命令的音频实现（不依赖外部库）
+        cat > src/audio_system.c << 'EOF'
+        #include "audio.h"
+        #include <stdio.h>
+        #include <stdlib.h>
+        #include <string.h>
+        #include <unistd.h>
+        #include <syslog.h>
+        #include <pthread.h>
+        
+        static int current_volume = 80;
+        static pthread_mutex_t audio_mutex = PTHREAD_MUTEX_INITIALIZER;
+        
+        int audio_init(void) {
+            syslog(LOG_INFO, "Audio system initialized (system commands mode)");
+            return 0;
+        }
+        
+        void audio_cleanup(void) {
+            syslog(LOG_INFO, "Audio system cleaned up");
+        }
+        
+        int audio_play(const char *filename, int force_wakeup) {
+            pthread_mutex_lock(&audio_mutex);
+            
+            if (!filename) {
+                syslog(LOG_ERR, "No audio file specified");
+                pthread_mutex_unlock(&audio_mutex);
+                return -1;
+            }
+            
+            if (access(filename, R_OK) != 0) {
+                syslog(LOG_ERR, "Audio file not found: %s", filename);
+                pthread_mutex_unlock(&audio_mutex);
+                return -1;
+            }
+            
+            syslog(LOG_INFO, "Playing audio: %s (force_wakeup=%d)", filename, force_wakeup);
+            
+            char cmd[1024];
+            if (force_wakeup) {
+                // 强制唤醒模式
+                snprintf(cmd, sizeof(cmd),
+                    "(systemd-inhibit --why=\"Notification\" --mode=block sleep 0.1 && "
+                    "(aplay \"%s\" 2>/dev/null || paplay \"%s\" 2>/dev/null || play \"%s\" 2>/dev/null)) &",
+                    filename, filename, filename);
+            } else {
+                snprintf(cmd, sizeof(cmd),
+                    "(aplay \"%s\" 2>/dev/null || paplay \"%s\" 2>/dev/null || play \"%s\" 2>/dev/null) &",
+                    filename, filename, filename);
+            }
+            
+            int result = system(cmd);
+            pthread_mutex_unlock(&audio_mutex);
+            
+            return (result == 0) ? 0 : -1;
+        }
+        
+        void audio_stop(void) {
+            pthread_mutex_lock(&audio_mutex);
+            system("pkill -f aplay 2>/dev/null");
+            system("pkill -f paplay 2>/dev/null");
+            system("pkill -f play 2>/dev/null");
+            pthread_mutex_unlock(&audio_mutex);
+        }
+        
+        void audio_set_volume(int volume) {
+            pthread_mutex_lock(&audio_mutex);
+            if (volume < 0) volume = 0;
+            if (volume > 100) volume = 100;
+            current_volume = volume;
+            
+            char cmd[256];
+            snprintf(cmd, sizeof(cmd),
+                "(amixer set Master %d%% 2>/dev/null || "
+                "pactl set-sink-volume @DEFAULT_SINK@ %d%% 2>/dev/null || "
+                "ponymix set-volume %d 2>/dev/null) &",
+                volume, volume, volume);
+            system(cmd);
+            pthread_mutex_unlock(&audio_mutex);
+        }
+        
+        int audio_get_volume(void) {
+            return current_volume;
+        }
+        
+        int audio_check_device(void) {
+            int result = system("aplay -l 2>/dev/null | grep -q card");
+            if (result != 0) {
+                result = system("pactl info 2>/dev/null | grep -q 'Server String'");
+            }
+            return (result == 0) ? 1 : 0;
+        }
+        EOF
+        
+        # 替换原来的audio.c
+        mv src/audio.c src/audio.c.original || true
+        cp src/audio_system.c src/audio.c
+        
+    - name: Create Makefile for static build
+      run: |
+        cat > Makefile << 'EOF'
+        # Static build Makefile for MIPS64el
+        CC = mips64el-linux-gnuabi64-gcc
+        CXX = mips64el-linux-gnuabi64-g++
+        AR = mips64el-linux-gnuabi64-ar
+        STRIP = mips64el-linux-gnuabi64-strip
+        
+        CFLAGS = -Wall -O2 -march=mips64el -mtune=mips64el -D_GNU_SOURCE -static
+        LDFLAGS = -static -lpthread
+        
+        # 添加静态库路径
+        CFLAGS += -I/usr/local/mips64el/include
+        LDFLAGS += -L/usr/local/mips64el/lib
+        
+        SOURCES = src/main.c src/audio.c src/http_server.c src/config.c
+        OBJECTS = $(SOURCES:.c=.o)
+        TARGET = notification-client
+        
+        all: $(TARGET)
+        
+        $(TARGET): $(OBJECTS)
+        	$(CC) $(CFLAGS) -o $@ $^ $(LDFLAGS)
+        	@echo "Build complete: $@"
+        	@file $@
+        	@echo "Size: $$(ls -lh $@ | awk '{print $$5}')"
+        
+        %.o: %.c
+        	$(CC) $(CFLAGS) -c $< -o $@
+        
+        clean:
+        	rm -f $(OBJECTS) $(TARGET)
+        
+        .PHONY: all clean
+        EOF
+        
+    - name: Build binary
+      run: |
+        make clean
+        make
+        file notification-client
+        ls -lh notification-client
+        
+    - name: Create package structure
+      run: |
+        mkdir -p package/DEBIAN
+        mkdir -p package/usr/bin
+        mkdir -p package/etc/notification-client
+        mkdir -p package/usr/share/notification-client/sounds
+        mkdir -p package/lib/systemd/system
+        mkdir -p package/usr/share/doc/notification-client
+        
+        cp notification-client package/usr/bin/
+        mips64el-linux-gnuabi64-strip package/usr/bin/notification-client 2>/dev/null || true
+        
+        # 创建默认配置文件
+        cat > package/etc/notification-client/config.json << 'EOF'
+        {
+          "default_sound": "/usr/share/notification-client/sounds/default.wav",
+          "default_volume": 80,
+          "http_port": 8080,
+          "audio_device": "default",
+          "enable_wakeup": true,
+          "custom_sounds": []
+        }
+        EOF
+        
+        # 创建默认声音文件
+        if command -v sox > /dev/null; then
+          sox -n package/usr/share/notification-client/sounds/default.wav synth 0.5 sine 800 2>/dev/null || true
+        fi
+        
+        # 创建systemd服务文件
+        cat > package/lib/systemd/system/notification-client.service << 'EOF'
+        [Unit]
+        Description=Notification Client Service
+        After=network.target sound.target
+        Wants=network.target
+
+        [Service]
+        Type=simple
+        User=nobody
+        Group=nogroup
+        ExecStart=/usr/bin/notification-client -d -c /etc/notification-client/config.json
+        Restart=always
+        RestartSec=10
+        StandardOutput=syslog
+        StandardError=syslog
+        SyslogIdentifier=notification-client
+
+        [Install]
+        WantedBy=multi-user.target
+        EOF
+        
+    - name: Create DEBIAN control file
+      run: |
+        VERSION="1.0.0"
+        if [ -n "${{ github.ref_type }}" ] && [ "${{ github.ref_type }}" = "tag" ]; then
+          VERSION=${GITHUB_REF#refs/tags/v}
+        fi
+        
+        cat > package/DEBIAN/control << EOF
+        Package: notification-client
+        Version: ${VERSION}
+        Section: sound
+        Priority: optional
+        Architecture: mips64el
+        Maintainer: ${GITHUB_ACTOR} <${GITHUB_ACTOR}@users.noreply.github.com>
+        Depends: systemd
+        Suggests: sox, alsa-utils, pulseaudio, sox
+        Description: Notification audio playback client with HTTP API
+         This package provides a daemon that plays notification sounds
+         triggered via HTTP API. Features include:
+          - HTTP REST API for remote triggering
+          - Auto-start at boot
+          - Force wakeup capability
+          - Volume control
+          - Custom sound support
+          - Systemd integration
+          - Statically linked for maximum compatibility
+        Homepage: https://github.com/${GITHUB_REPOSITORY}
+EOF
+        
+    - name: Create postinst script
+      run: |
+        cat > package/DEBIAN/postinst << 'EOF'
+        #!/bin/bash
+        set -e
+        case "$1" in
+            configure)
+                mkdir -p /etc/notification-client
+                mkdir -p /usr/share/notification-client/sounds
+                if [ ! -f /usr/share/notification-client/sounds/default.wav ] && command -v sox > /dev/null; then
+                    sox -n /usr/share/notification-client/sounds/default.wav synth 0.5 sine 800 2>/dev/null || true
+                fi
+                if [ -f /lib/systemd/system/notification-client.service ]; then
+                    systemctl daemon-reload 2>/dev/null || true
+                    systemctl enable notification-client.service 2>/dev/null || true
+                    systemctl start notification-client.service 2>/dev/null || true
+                fi
+                ;;
+        esac
+        exit 0
+        EOF
+        chmod 755 package/DEBIAN/postinst
+        
+    - name: Create prerm script
+      run: |
+        cat > package/DEBIAN/prerm << 'EOF'
+        #!/bin/bash
+        set -e
+        case "$1" in
+            remove)
+                if [ -f /lib/systemd/system/notification-client.service ]; then
+                    systemctl stop notification-client.service 2>/dev/null || true
+                    systemctl disable notification-client.service 2>/dev/null || true
+                fi
+                ;;
+        esac
+        exit 0
+        EOF
+        chmod 755 package/DEBIAN/prerm
+        
+    - name: Build DEB package
+      run: |
+        VERSION="1.0.0"
+        if [ -n "${{ github.ref_type }}" ] && [ "${{ github.ref_type }}" = "tag" ]; then
+          VERSION=${GITHUB_REF#refs/tags/v}
+        fi
+        fakeroot dpkg-deb --build package notification-client_${VERSION}_mips64el.deb
+        file notification-client_${VERSION}_mips64el.deb
+        dpkg-deb --info notification-client_${VERSION}_mips64el.deb
+        dpkg-deb --contents notification-client_${VERSION}_mips64el.deb
+        
+    - name: Lintian check
+      run: |
+        if [ -f notification-client_*.deb ]; then
+          lintian notification-client_*.deb 2>/dev/null || true
+        fi
+        
+    - name: Upload DEB artifact
+      uses: actions/upload-artifact@v4
+      with:
+        name: notification-client-mips64el
+        path: notification-client_*.deb
+        if-no-files-found: error
+        
+    - name: Create Release
+      if: startsWith(github.ref, 'refs/tags/')
+      uses: softprops/action-gh-release@v2
+      with:
+        files: notification-client_*.deb
+        generate_release_notes: true
+        draft: false
+        prerelease: false
+      env:
+        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
