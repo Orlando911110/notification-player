@@ -1,0 +1,20 @@
+Source: notification-client
+Section: sound
+Priority: optional
+Maintainer: Your Name <your.email@example.com>
+Build-Depends: debhelper (>= 10), libpulse-dev, libasound2-dev, libjson-c-dev
+Standards-Version: 3.9.8
+Homepage: https://example.com/notification-client
+
+Package: notification-client
+Architecture: mips64el
+Depends: ${shlibs:Depends}, ${misc:Depends}, pulseaudio, libjson-c5
+Description: Notification audio playback client with HTTP API
+ This package provides a daemon that plays notification sounds
+ triggered via HTTP API. Features include:
+  - HTTP REST API for remote triggering
+  - Auto-start at boot
+  - Force wakeup capability
+  - Volume control
+  - Custom sound support
+  - Systemd integration
