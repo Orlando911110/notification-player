@@ -1,4 +1,4 @@
-name: Build MIPS64el DEB Package (Full Embedded with Players)
+name: Build MIPS64el DEB Package (Full Embedded with All Libraries)
 
 on:
   push:
@@ -45,50 +45,17 @@ jobs:
           wget \
           curl || true
         
-        # 下载所有MIPS64el依赖（包括播放器）
-        echo "=== 下载所有依赖（包括播放器） ==="
-        
+        # 创建目录结构
+        echo "=== 创建目录结构 ==="
         mkdir -p deps/mips64el/usr/lib/notification-client
         mkdir -p deps/mips64el/usr/lib/notification-client/bin
         
-        # 1. 下载音频播放器
-        echo "下载 aplay (ALSA播放器)..."
+        # 下载所有MIPS64el架构的依赖包
+        echo "=== 下载所有MIPS64el依赖包 ==="
         sudo apt-get install -y \
           alsa-utils:mips64el \
           pulseaudio-utils:mips64el \
-          pulseaudio:mips64el || true
-        
-        # 复制aplay
-        if [ -f /usr/bin/aplay ]; then
-          cp /usr/bin/aplay deps/mips64el/usr/lib/notification-client/bin/
-          echo "aplay copied"
-        else
-          # 从包中提取
-          sudo apt-get download alsa-utils:mips64el
-          if [ -f alsa-utils_*.deb ]; then
-            dpkg -x alsa-utils_*.deb temp_alsa/
-            cp temp_alsa/usr/bin/aplay deps/mips64el/usr/lib/notification-client/bin/ 2>/dev/null || true
-            cp temp_alsa/usr/bin/arecord deps/mips64el/usr/lib/notification-client/bin/ 2>/dev/null || true
-            rm -rf temp_alsa alsa-utils_*.deb
-          fi
-        fi
-        
-        # 复制paplay
-        if [ -f /usr/bin/paplay ]; then
-          cp /usr/bin/paplay deps/mips64el/usr/lib/notification-client/bin/
-          echo "paplay copied"
-        else
-          sudo apt-get download pulseaudio-utils:mips64el
-          if [ -f pulseaudio-utils_*.deb ]; then
-            dpkg -x pulseaudio-utils_*.deb temp_pulse/
-            cp temp_pulse/usr/bin/paplay deps/mips64el/usr/lib/notification-client/bin/ 2>/dev/null || true
-            rm -rf temp_pulse pulseaudio-utils_*.deb
-          fi
-        fi
-        
-        # 2. 下载所有音频相关库
-        echo "下载音频库..."
-        sudo apt-get install -y \
+          pulseaudio:mips64el \
           libasound2:mips64el \
           libasound2-data:mips64el \
           libpulse0:mips64el \
@@ -113,31 +80,172 @@ jobs:
           libvorbisenc2:mips64el \
           libflac8:mips64el \
           libopus0:mips64el \
-          libmp3lame0:mips64el || true
+          libmp3lame0:mips64el \
+          libdbus-1-3:mips64el \
+          libx11-6:mips64el \
+          libxext6:mips64el \
+          libxi6:mips64el \
+          libxtst6:mips64el \
+          libxrender1:mips64el \
+          libxfixes3:mips64el \
+          libxcb1:mips64el \
+          libxau6:mips64el \
+          libxdmcp6:mips64el \
+          libxcb-util1:mips64el \
+          libxcb-util0-dev:mips64el \
+          libxcb-shm0:mips64el \
+          libxcb-shape0:mips64el \
+          libxcb-xfixes0:mips64el \
+          libxcb-render0:mips64el \
+          libxcb-randr0:mips64el \
+          libxcb-icccm4:mips64el \
+          libxcb-image0:mips64el \
+          libxcb-keysyms1:mips64el \
+          libxcb-ewmh2:mips64el \
+          libxcb-xkb1:mips64el \
+          libxkbcommon0:mips64el \
+          libxkbcommon-x11-0:mips64el \
+          libglib2.0-0:mips64el \
+          libpcre2-8-0:mips64el \
+          libselinux1:mips64el \
+          libpcre3:mips64el \
+          libblkid1:mips64el \
+          libmount1:mips64el \
+          libuuid1:mips64el \
+          libcrypto3:mips64el \
+          libz1:mips64el \
+          libbz2-1.0:mips64el \
+          liblzma5:mips64el \
+          libreadline8:mips64el \
+          libncursesw6:mips64el \
+          libtinfo6:mips64el \
+          libgcc-s1:mips64el \
+          libstdc++6:mips64el || true
         
-        # 3. 复制所有库文件
-        echo "复制库文件..."
-        find /usr/lib/mips64el-linux-gnuabi64 -name "*.so*" -type f 2>/dev/null | while read lib; do
+        # 复制aplay
+        echo "=== 复制aplay ==="
+        if [ -f /usr/bin/aplay ]; then
+          cp /usr/bin/aplay deps/mips64el/usr/lib/notification-client/bin/
+          echo "aplay copied from /usr/bin/aplay"
+        else
+          sudo apt-get download alsa-utils:mips64el 2>/dev/null || true
+          if [ -f alsa-utils_*.deb ]; then
+            dpkg -x alsa-utils_*.deb temp_alsa/ 2>/dev/null || true
+            if [ -f temp_alsa/usr/bin/aplay ]; then
+              cp temp_alsa/usr/bin/aplay deps/mips64el/usr/lib/notification-client/bin/
+              echo "aplay extracted from deb"
+            fi
+            rm -rf temp_alsa alsa-utils_*.deb
+          fi
+        fi
+        
+        # 复制paplay
+        echo "=== 复制paplay ==="
+        if [ -f /usr/bin/paplay ]; then
+          cp /usr/bin/paplay deps/mips64el/usr/lib/notification-client/bin/
+          echo "paplay copied from /usr/bin/paplay"
+        else
+          sudo apt-get download pulseaudio-utils:mips64el 2>/dev/null || true
+          if [ -f pulseaudio-utils_*.deb ]; then
+            dpkg -x pulseaudio-utils_*.deb temp_pulse/ 2>/dev/null || true
+            if [ -f temp_pulse/usr/bin/paplay ]; then
+              cp temp_pulse/usr/bin/paplay deps/mips64el/usr/lib/notification-client/bin/
+              echo "paplay extracted from deb"
+            fi
+            rm -rf temp_pulse pulseaudio-utils_*.deb
+          fi
+        fi
+        
+        # 复制所有库文件
+        echo "=== 复制所有库文件 ==="
+        
+        # 从 /usr/lib/mips64el-linux-gnuabi64 复制
+        if [ -d "/usr/lib/mips64el-linux-gnuabi64" ]; then
+          echo "复制 /usr/lib/mips64el-linux-gnuabi64 下的所有库..."
+          find /usr/lib/mips64el-linux-gnuabi64 -name "*.so*" -type f 2>/dev/null | while read lib; do
+            echo "Copying: $lib"
+            cp -v "$lib" deps/mips64el/usr/lib/notification-client/ 2>/dev/null || true
+          done
+        fi
+        
+        # 从 /usr/lib 下搜索 mips64el 相关库
+        echo "复制 /usr/lib 下的 mips64el 库..."
+        find /usr/lib -name "*.so*" -path "*/mips64el*" -type f 2>/dev/null | while read lib; do
+          echo "Copying: $lib"
           cp -v "$lib" deps/mips64el/usr/lib/notification-client/ 2>/dev/null || true
         done
         
-        # 4. 创建符号链接
+        # 从 /lib 下搜索 mips64el 相关库
+        echo "复制 /lib 下的 mips64el 库..."
+        find /lib -name "*.so*" -path "*/mips64el*" -type f 2>/dev/null | while read lib; do
+          echo "Copying: $lib"
+          cp -v "$lib" deps/mips64el/usr/lib/notification-client/ 2>/dev/null || true
+        done
+        
+        # 复制 GCC 相关库
+        echo "复制 GCC 相关库..."
+        find /usr/lib/gcc-cross/mips64el-linux-gnuabi64 -name "*.so*" -type f 2>/dev/null | while read lib; do
+          echo "Copying: $lib"
+          cp -v "$lib" deps/mips64el/usr/lib/notification-client/ 2>/dev/null || true
+        done
+        
+        # 创建符号链接
+        echo "=== 创建库符号链接 ==="
         cd deps/mips64el/usr/lib/notification-client
         for lib in *.so.*; do
-          if [ -f "$lib" ]; then
+          if [ -f "$lib" ] && [ -n "$lib" ]; then
             base_name=$(echo "$lib" | cut -d. -f1)
             if [ ! -f "${base_name}.so" ] && [ ! -L "${base_name}.so" ]; then
               ln -sf "$lib" "${base_name}.so" 2>/dev/null || true
+              echo "Created link: ${base_name}.so -> $lib"
             fi
           fi
         done
         cd ../../../..
         
-        # 5. 统计
+        # 复制二进制文件的依赖工具
+        echo "=== 复制额外工具 ==="
+        # 复制 amixer (音量控制)
+        if [ -f /usr/bin/amixer ]; then
+          cp /usr/bin/amixer deps/mips64el/usr/lib/notification-client/bin/ 2>/dev/null || true
+          echo "amixer copied"
+        fi
+        
+        # 复制 pactl (PulseAudio控制)
+        if [ -f /usr/bin/pactl ]; then
+          cp /usr/bin/pactl deps/mips64el/usr/lib/notification-client/bin/ 2>/dev/null || true
+          echo "pactl copied"
+        fi
+        
+        # 复制 systemd-inhibit (强制唤醒)
+        if [ -f /usr/bin/systemd-inhibit ]; then
+          cp /usr/bin/systemd-inhibit deps/mips64el/usr/lib/notification-client/bin/ 2>/dev/null || true
+          echo "systemd-inhibit copied"
+        fi
+        
+        # 设置可执行权限
+        chmod 755 deps/mips64el/usr/lib/notification-client/bin/* 2>/dev/null || true
+        
+        # 统计
+        echo "=========================================="
         echo "=== 文件统计 ==="
-        echo "二进制文件: $(ls -1 deps/mips64el/usr/lib/notification-client/bin/ 2>/dev/null | wc -l)"
-        echo "库文件: $(ls -1 deps/mips64el/usr/lib/notification-client/*.so* 2>/dev/null | wc -l)"
-        du -sh deps/mips64el
+        echo "=========================================="
+        echo ""
+        echo "二进制文件:"
+        ls -la deps/mips64el/usr/lib/notification-client/bin/ 2>/dev/null || echo "No binary files"
+        echo ""
+        echo "库文件数量:"
+        ls -1 deps/mips64el/usr/lib/notification-client/*.so* 2>/dev/null | wc -l
+        echo ""
+        echo "库文件列表 (前20个):"
+        ls -la deps/mips64el/usr/lib/notification-client/*.so* 2>/dev/null | head -20 || echo "No library files"
+        echo ""
+        echo "总大小:"
+        du -sh deps/mips64el 2>/dev/null || echo "Directory not found"
+        echo ""
+        echo "详细大小:"
+        du -sh deps/mips64el/usr/lib/notification-client/* 2>/dev/null | head -20 || echo "No files"
+        echo "=========================================="
         
     - name: Create all source files
       run: |
@@ -185,7 +293,7 @@ jobs:
         AUDIO_WORKER_H_EOF
         
         # ============================================
-        # audio_worker.c - 使用内置播放器
+        # audio_worker.c
         # ============================================
         cat > src/audio_worker.c << 'AUDIO_WORKER_C_EOF'
         #include "audio_worker.h"
@@ -198,7 +306,6 @@ jobs:
         #include <errno.h>
         #include <sys/wait.h>
         #include <signal.h>
-        #include <dlfcn.h>
         
         #define MAX_QUEUE_SIZE 100
         #define MAX_WORKERS 4
@@ -223,7 +330,6 @@ jobs:
         static int has_aplay = 0;
         static int has_paplay = 0;
         
-        // 检测可用的播放器
         static void detect_players(void) {
             char path[256];
             
@@ -233,7 +339,6 @@ jobs:
             snprintf(path, sizeof(path), "%s/paplay", PLAYER_PATH);
             has_paplay = (access(path, X_OK) == 0);
             
-            // 也检测系统路径
             if (!has_aplay) {
                 has_aplay = (access("/usr/bin/aplay", X_OK) == 0);
             }
@@ -248,10 +353,8 @@ jobs:
             pid_t pid;
             int status;
             char player_path[256] = {0};
-            char *player_args[4];
             int use_aplay = 0;
             
-            // 选择播放器
             if (has_aplay) {
                 snprintf(player_path, sizeof(player_path), "%s/aplay", PLAYER_PATH);
                 if (access(player_path, X_OK) == 0) {
@@ -278,18 +381,15 @@ jobs:
             
             pid = fork();
             if (pid == 0) {
-                // 子进程 - 设置环境变量
                 char lib_path[512];
                 snprintf(lib_path, sizeof(lib_path), 
                         "LD_LIBRARY_PATH=/usr/lib/notification-client:/usr/lib/mips64el-linux-gnuabi64:$LD_LIBRARY_PATH");
                 putenv(lib_path);
                 
                 if (force_wakeup) {
-                    // 尝试使用systemd-inhibit
                     execlp("systemd-inhibit", "systemd-inhibit", 
                            "--why=Notification", "--mode=block", 
                            player_path, filename, NULL);
-                    // 如果systemd-inhibit失败，直接播放
                 }
                 
                 execl(player_path, player_path, filename, NULL);
@@ -336,7 +436,6 @@ jobs:
                             pthread_mutex_unlock(&volume_mutex);
                             {
                                 char cmd[128];
-                                // 使用amixer（如果有）
                                 snprintf(cmd, sizeof(cmd), 
                                         "amixer set Master %d%% 2>/dev/null || pactl set-sink-volume @DEFAULT_SINK@ %d%% 2>/dev/null",
                                         job->volume, job->volume);
@@ -951,7 +1050,7 @@ jobs:
         make
         file notification-client
         
-    - name: Create DEB package with full embedded dependencies and players
+    - name: Create DEB package with full embedded dependencies
       run: |
         mkdir -p package/DEBIAN
         mkdir -p package/usr/bin
@@ -965,32 +1064,14 @@ jobs:
         cp notification-client package/usr/bin/
         ${STRIP} package/usr/bin/notification-client 2>/dev/null || true
         
-        # 复制播放器
-        echo "=== 嵌入播放器 ==="
-        if [ -d "deps/mips64el/usr/lib/notification-client/bin" ]; then
-          cp -r deps/mips64el/usr/lib/notification-client/bin/* package/usr/lib/notification-client/bin/ 2>/dev/null || true
-        fi
-        chmod 755 package/usr/lib/notification-client/bin/* 2>/dev/null || true
-        
-        # 复制所有库文件
-        echo "=== 嵌入库文件 ==="
+        # 复制所有依赖
+        echo "=== 复制所有依赖到DEB包 ==="
         if [ -d "deps/mips64el/usr/lib/notification-client" ]; then
-          find deps/mips64el/usr/lib/notification-client -name "*.so*" -type f 2>/dev/null | while read lib; do
-            cp -v "$lib" package/usr/lib/notification-client/ 2>/dev/null || true
-          done
+          cp -r deps/mips64el/usr/lib/notification-client/* package/usr/lib/notification-client/ 2>/dev/null || true
         fi
         
-        # 创建符号链接
-        cd package/usr/lib/notification-client
-        for lib in *.so.*; do
-          if [ -f "$lib" ]; then
-            base_name=$(echo "$lib" | cut -d. -f1)
-            if [ ! -f "${base_name}.so" ] && [ ! -L "${base_name}.so" ]; then
-              ln -sf "$lib" "${base_name}.so" 2>/dev/null || true
-            fi
-          fi
-        done
-        cd ../../..
+        # 确保bin目录有执行权限
+        chmod 755 package/usr/lib/notification-client/bin/* 2>/dev/null || true
         
         # 创建启动脚本
         cat > package/usr/bin/notification-client-wrapper << 'WRAPPER_EOF'
@@ -1021,7 +1102,7 @@ jobs:
         # systemd服务文件
         cat > package/lib/systemd/system/notification-client.service << 'SERVICE_EOF'
         [Unit]
-        Description=Notification Client Service (Full Embedded with Players)
+        Description=Notification Client Service (Full Embedded)
         After=network.target sound.target
         Wants=network.target
 
@@ -1046,20 +1127,22 @@ jobs:
         cat > package/usr/share/doc/notification-client/README << 'README_EOF'
         Notification Client - Full Embedded Version
         
-        所有依赖和播放器已包含在 /usr/lib/notification-client/ 目录中。
+        所有依赖库已包含在 /usr/lib/notification-client/ 目录中。
         无需联网安装任何额外依赖。
         
-        包含的播放器：
-        - aplay (ALSA播放器)
-        - paplay (PulseAudio播放器)
+        包含内容：
+        - 主程序: notification-client
+        - 播放器: aplay, paplay
+        - 所有运行时库 (.so 文件)
+        - 工具: amixer, pactl, systemd-inhibit
         
         使用方法：
         1. 安装: sudo dpkg -i notification-client_*.deb
         2. 启动: sudo systemctl start notification-client
-        3. API测试: curl http://localhost:8080/api/play
-        4. 状态查看: curl http://localhost:8080/api/status
+        3. 测试: curl http://localhost:8080/api/play
+        4. 状态: curl http://localhost:8080/api/status
         
-        注意：系统需要 ALSA 或 PulseAudio 内核驱动支持。
+        注意：需要系统有 ALSA 或 PulseAudio 内核驱动支持。
         README_EOF
         
     - name: Create DEBIAN control files
@@ -1082,8 +1165,8 @@ jobs:
         Depends: libc6 (>= 2.28), systemd
         Suggests: sox
         Description: Notification audio playback client (Full Embedded)
-         Complete standalone version with embedded audio players.
-         Includes:
+         Complete standalone version with all dependencies included.
+         Features:
           - HTTP REST API for remote triggering
           - Async audio playback (non-blocking)
           - Embedded aplay and paplay players
@@ -1105,23 +1188,19 @@ jobs:
                 mkdir -p /usr/share/notification-client/sounds
                 mkdir -p /usr/lib/notification-client/bin
                 
-                # 设置环境变量
                 cat > /etc/profile.d/notification-client.sh << 'ENV_EOF'
                 export LD_LIBRARY_PATH=/usr/lib/notification-client:$LD_LIBRARY_PATH
                 export PATH=/usr/lib/notification-client/bin:$PATH
                 ENV_EOF
                 chmod 644 /etc/profile.d/notification-client.sh
                 
-                # 添加到ld.so.conf
                 echo "/usr/lib/notification-client" > /etc/ld.so.conf.d/notification-client.conf 2>/dev/null || true
                 ldconfig 2>/dev/null || true
                 
-                # 创建默认声音
                 if [ ! -f /usr/share/notification-client/sounds/default.wav ] && command -v sox > /dev/null 2>&1; then
                     sox -n /usr/share/notification-client/sounds/default.wav synth 0.5 sine 800 2>/dev/null || true
                 fi
                 
-                # 启动服务
                 systemctl daemon-reload 2>/dev/null || true
                 systemctl enable notification-client.service 2>/dev/null || true
                 systemctl start notification-client.service 2>/dev/null || true
@@ -1156,8 +1235,10 @@ jobs:
         fakeroot dpkg-deb --build package notification-client_${VERSION}_mips64el.deb
         file notification-client_${VERSION}_mips64el.deb
         dpkg-deb --info notification-client_${VERSION}_mips64el.deb
-        echo "=== DEB包内容 ==="
-        dpkg-deb --contents notification-client_${VERSION}_mips64el.deb | head -40
+        echo ""
+        echo "=== DEB包内容（前30行） ==="
+        dpkg-deb --contents notification-client_${VERSION}_mips64el.deb | head -30
+        echo ""
         echo "=== DEB包大小 ==="
         ls -lh notification-client_${VERSION}_mips64el.deb
         
