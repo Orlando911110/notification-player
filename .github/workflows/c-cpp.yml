@@ -114,11 +114,25 @@ jobs:
         	$(CC) $(CFLAGS) -c $< -o $@
         
         clean:
-        	rm -f $(OBJECTS) $(TARGET)
+        	rm -f $(OBJECTS)
+        	rm -rf $(TARGET)
+        	rm -f notification-client_*.deb
+        	rm -rf package/
         MAKEFILE_EOF
         
+        # 备份原有Makefile
+        cp Makefile Makefile.original 2>/dev/null || true
         cp Makefile.cross Makefile
+        echo "=== Makefile content ==="
         cat Makefile
+        
+    - name: Clean previous builds
+      run: |
+        # 清理可能存在的目录
+        rm -rf notification-client
+        rm -rf package/
+        rm -f notification-client_*.deb
+        rm -f src/*.o
         
     - name: Build binary
       run: |
