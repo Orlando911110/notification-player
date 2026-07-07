@@ -1,4 +1,4 @@
-name: Build MIPS64el Notification Client with HTTPS (Multi-Source)
+name: Build MIPS64el Notification Client (HTTPS Only)
 
 on:
   push:
@@ -17,39 +17,28 @@ jobs:
     - name: Checkout code
       uses: actions/checkout@v4
       
-    - name: Configure multi-source repositories
+    - name: Configure Ubuntu ports source
       run: |
-        # 1. 配置麒麟源
-        sudo tee /etc/apt/sources.list.d/kylin.list << 'EOF'
-        deb https://update.cs2c.com.cn/NS/V10/V10SP1.1/os/adv/lic/updates/ ./
-        deb https://update.cs2c.com.cn/NS/V10/V10SP1.1/os/adv/lic/updates/ updates/
-        EOF
+        # 清理现有源
+        sudo rm -f /etc/apt/sources.list.d/*.list
         
-        # 2. 配置Ubuntu ports源（用于MIPS64el架构包）
+        # 配置Ubuntu ports源
         sudo tee /etc/apt/sources.list.d/ubuntu-ports.list << 'EOF'
         deb [arch=mips64el] http://ports.ubuntu.com/ubuntu-ports jammy main universe
         deb [arch=mips64el] http://ports.ubuntu.com/ubuntu-ports jammy-updates main universe
         deb [arch=mips64el] http://ports.ubuntu.com/ubuntu-ports jammy-security main universe
         EOF
         
-        # 3. 配置Debian ports源（备用）
-        sudo tee /etc/apt/sources.list.d/debian-ports.list << 'EOF'
-        deb [arch=mips64el] http://deb.debian.org/debian-ports sid main
-        deb [arch=mips64el] http://deb.debian.org/debian-ports unreleased main
-        EOF
-        
-        # 4. 添加MIPS64el架构支持
+        # 添加MIPS64el架构支持
         sudo dpkg --add-architecture mips64el
         
-        # 5. 更新包列表（忽略部分源不可达的错误）
+        # 更新包列表
         sudo apt-get update || true
         
         echo "=== 源配置完成 ==="
-        cat /etc/apt/sources.list.d/*.list
         
     - name: Install cross-compilation toolchain
       run: |
-        # 安装交叉编译工具链
         sudo apt-get update
         sudo apt-get install -y \
           gcc-12-mips64el-linux-gnuabi64 \
@@ -72,125 +61,110 @@ jobs:
         sudo ln -sf /usr/bin/mips64el-linux-gnuabi64-gcc-12 /usr/bin/mips64el-linux-gnuabi64-gcc 2>/dev/null || true
         sudo ln -sf /usr/bin/mips64el-linux-gnuabi64-g++-12 /usr/bin/mips64el-linux-gnuabi64-g++ 2>/dev/null || true
         
-        # 如果gcc-12不存在，尝试gcc-11
-        if ! command -v mips64el-linux-gnuabi64-gcc &> /dev/null; then
-          sudo apt-get install -y gcc-11-mips64el-linux-gnuabi64 g++-11-mips64el-linux-gnuabi64 || true
-          sudo ln -sf /usr/bin/mips64el-linux-gnuabi64-gcc-11 /usr/bin/mips64el-linux-gnuabi64-gcc 2>/dev/null || true
-          sudo ln -sf /usr/bin/mips64el-linux-gnuabi64-g++-11 /usr/bin/mips64el-linux-gnuabi64-g++ 2>/dev/null || true
-        fi
-        
-        # 验证
         echo "=== 验证交叉编译工具链 ==="
-        which mips64el-linux-gnuabi64-gcc || echo "gcc not found"
-        mips64el-linux-gnuabi64-gcc --version 2>/dev/null || echo "gcc version check failed"
+        mips64el-linux-gnuabi64-gcc --version 2>/dev/null || echo "gcc not found"
         
-    - name: Install MIPS64el libraries from Ubuntu ports
+    - name: Download MIPS64el dependencies
       run: |
-        echo "=== 从Ubuntu ports安装MIPS64el库 ==="
+        echo "=== 下载MIPS64el依赖库 ==="
         
-        # 创建依赖目录
         mkdir -p deps/mips64el/usr/lib/notification-client
         mkdir -p deps/mips64el/usr/lib/notification-client/bin
         
-        # 尝试安装MIPS64el库
-        sudo apt-get install -y \
-          libssl3:mips64el \
-          libc6:mips64el \
-          libc6-dev:mips64el \
-          libpulse0:mips64el \
-          libasound2:mips64el \
-          libjson-c5:mips64el 2>/dev/null || true
-        
-        # 从Ubuntu ports直接下载OpenSSL库（核心）
-        echo "=== 从Ubuntu ports下载OpenSSL库 ==="
         cd /tmp
-        wget -q http://ports.ubuntu.com/ubuntu-ports/pool/main/o/openssl/libssl3_3.0.2-0ubuntu1_mips64el.deb -O libssl3.deb 2>/dev/null || true
-        if [ -f libssl3.deb ]; then
-          dpkg -x libssl3.deb temp_ssl/ 2>/dev/null || true
-          if [ -d temp_ssl/usr/lib/mips64el-linux-gnuabi64 ]; then
-            mkdir -p $OLDPWD/deps/mips64el/usr/lib/notification-client
-            cp -r temp_ssl/usr/lib/mips64el-linux-gnuabi64/* $OLDPWD/deps/mips64el/usr/lib/notification-client/ 2>/dev/null || true
-            echo "OpenSSL库提取成功"
+        
+        # 下载OpenSSL库
+        for pkg in libssl3 libcrypto3; do
+          wget -q "http://ports.ubuntu.com/ubuntu-ports/pool/main/o/openssl/${pkg}_3.0.2-0ubuntu1_mips64el.deb" -O "${pkg}.deb" 2>/dev/null || true
+          if [ -f "${pkg}.deb" ]; then
+            dpkg -x "${pkg}.deb" "temp_${pkg}/" 2>/dev/null || true
+            if [ -d "temp_${pkg}/usr/lib/mips64el-linux-gnuabi64" ]; then
+              cp -r "temp_${pkg}/usr/lib/mips64el-linux-gnuabi64/"* $OLDPWD/deps/mips64el/usr/lib/notification-client/ 2>/dev/null || true
+              echo "${pkg} 提取成功"
+            fi
+            rm -rf "temp_${pkg}" "${pkg}.deb"
           fi
-          rm -rf temp_ssl libssl3.deb
+        done
+        
+        # 下载libc6
+        wget -q http://ports.ubuntu.com/ubuntu-ports/pool/main/g/glibc/libc6_2.35-0ubuntu3_mips64el.deb -O libc6.deb 2>/dev/null || true
+        if [ -f libc6.deb ]; then
+          dpkg -x libc6.deb temp_libc/ 2>/dev/null || true
+          if [ -d temp_libc/usr/lib/mips64el-linux-gnuabi64 ]; then
+            cp -r temp_libc/usr/lib/mips64el-linux-gnuabi64/* $OLDPWD/deps/mips64el/usr/lib/notification-client/ 2>/dev/null || true
+            echo "libc6 提取成功"
+          fi
+          rm -rf temp_libc libc6.deb
         fi
         
-        # 下载libcrypto
-        wget -q http://ports.ubuntu.com/ubuntu-ports/pool/main/o/openssl/libcrypto3_3.0.2-0ubuntu1_mips64el.deb -O libcrypto3.deb 2>/dev/null || true
-        if [ -f libcrypto3.deb ]; then
-          dpkg -x libcrypto3.deb temp_crypto/ 2>/dev/null || true
-          if [ -d temp_crypto/usr/lib/mips64el-linux-gnuabi64 ]; then
-            cp -r temp_crypto/usr/lib/mips64el-linux-gnuabi64/* $OLDPWD/deps/mips64el/usr/lib/notification-client/ 2>/dev/null || true
-            echo "libcrypto提取成功"
+        # 下载音频库
+        for pkg in libpulse0 libasound2 libjson-c5; do
+          wget -q "http://ports.ubuntu.com/ubuntu-ports/pool/main/p/pulseaudio/${pkg}_13.99.1-1ubuntu3_mips64el.deb" -O "${pkg}.deb" 2>/dev/null || true
+          if [ -f "${pkg}.deb" ]; then
+            dpkg -x "${pkg}.deb" "temp_${pkg}/" 2>/dev/null || true
+            if [ -d "temp_${pkg}/usr/lib/mips64el-linux-gnuabi64" ]; then
+              cp -r "temp_${pkg}/usr/lib/mips64el-linux-gnuabi64/"* $OLDPWD/deps/mips64el/usr/lib/notification-client/ 2>/dev/null || true
+              echo "${pkg} 提取成功"
+            fi
+            rm -rf "temp_${pkg}" "${pkg}.deb"
           fi
-          rm -rf temp_crypto libcrypto3.deb
-        fi
+        done
         
         cd $OLDPWD
         
-        # 从系统复制OpenSSL头文件（头文件架构无关）
-        echo "=== 复制OpenSSL头文件 ==="
+        # 复制系统OpenSSL头文件（架构无关）
         if [ -d "/usr/include/openssl" ]; then
           mkdir -p deps/mips64el/usr/include
           cp -r /usr/include/openssl deps/mips64el/usr/include/
           echo "OpenSSL头文件复制完成"
         fi
         
-        # 复制其他已安装的MIPS64el库
-        echo "=== 复制MIPS64el库 ==="
-        if [ -d "/usr/lib/mips64el-linux-gnuabi64" ]; then
-          find /usr/lib/mips64el-linux-gnuabi64 -name "*.so*" -type f 2>/dev/null | while read lib; do
-            echo "Copying: $lib"
-            cp -v "$lib" deps/mips64el/usr/lib/notification-client/ 2>/dev/null || true
-          done
-        fi
-        
         echo "=== 依赖下载完成 ==="
         echo "库文件数量: $(ls -1 deps/mips64el/usr/lib/notification-client/*.so* 2>/dev/null | wc -l)"
         
-    - name: Download and extract audio tools
+    - name: Download audio players
       run: |
-        echo "=== 下载音频工具 ==="
+        echo "=== 下载音频播放器 ==="
         mkdir -p deps/mips64el/usr/lib/notification-client/bin
         
         cd /tmp
-        # 从Ubuntu ports下载alsa-utils
+        
+        # 下载alsa-utils (包含aplay)
         wget -q http://ports.ubuntu.com/ubuntu-ports/pool/main/a/alsa-utils/alsa-utils_1.2.6-1ubuntu1_mips64el.deb -O alsa-utils.deb 2>/dev/null || true
         if [ -f alsa-utils.deb ]; then
           dpkg -x alsa-utils.deb temp_alsa/ 2>/dev/null || true
           if [ -f temp_alsa/usr/bin/aplay ]; then
             cp temp_alsa/usr/bin/aplay $OLDPWD/deps/mips64el/usr/lib/notification-client/bin/
-            echo "aplay extracted"
+            echo "aplay 提取成功"
           fi
           rm -rf temp_alsa alsa-utils.deb
         fi
         
-        # 从Ubuntu ports下载pulseaudio-utils
+        # 下载pulseaudio-utils (包含paplay)
         wget -q http://ports.ubuntu.com/ubuntu-ports/pool/main/p/pulseaudio/pulseaudio-utils_13.99.1-1ubuntu3_mips64el.deb -O pulseaudio-utils.deb 2>/dev/null || true
         if [ -f pulseaudio-utils.deb ]; then
           dpkg -x pulseaudio-utils.deb temp_pulse/ 2>/dev/null || true
           if [ -f temp_pulse/usr/bin/paplay ]; then
             cp temp_pulse/usr/bin/paplay $OLDPWD/deps/mips64el/usr/lib/notification-client/bin/
-            echo "paplay extracted"
+            echo "paplay 提取成功"
           fi
           rm -rf temp_pulse pulseaudio-utils.deb
         fi
+        
         cd $OLDPWD
         
-        # 备用：使用系统工具
+        # 备用：使用系统工具（非MIPS64el）
         if [ ! -f deps/mips64el/usr/lib/notification-client/bin/aplay ]; then
-          echo "aplay not downloaded, trying system aplay..."
           if [ -f /usr/bin/aplay ]; then
             cp /usr/bin/aplay deps/mips64el/usr/lib/notification-client/bin/
-            echo "aplay copied from system"
+            echo "aplay 从系统复制"
           fi
         fi
         
         if [ ! -f deps/mips64el/usr/lib/notification-client/bin/paplay ]; then
-          echo "paplay not downloaded, trying system paplay..."
           if [ -f /usr/bin/paplay ]; then
             cp /usr/bin/paplay deps/mips64el/usr/lib/notification-client/bin/
-            echo "paplay copied from system"
+            echo "paplay 从系统复制"
           fi
         fi
         
@@ -200,11 +174,11 @@ jobs:
         for tool in amixer pactl systemd-inhibit openssl; do
           if [ -f "/usr/bin/$tool" ]; then
             cp "/usr/bin/$tool" deps/mips64el/usr/lib/notification-client/bin/ 2>/dev/null || true
-            echo "$tool copied"
+            echo "$tool 复制"
           fi
         done
         
-        echo "=== 音频工具完成 ==="
+        echo "=== 音频播放器完成 ==="
         ls -la deps/mips64el/usr/lib/notification-client/bin/
         
     - name: Generate SSL certificate
@@ -219,7 +193,6 @@ jobs:
         chmod 600 certs/server.key
         chmod 644 certs/server.crt
         echo "证书生成完成"
-        ls -la certs/
         
     - name: Create source files
       run: |
@@ -384,9 +357,7 @@ jobs:
                                 snprintf(cmd, sizeof(cmd), 
                                         "amixer set Master %d%% 2>/dev/null || pactl set-sink-volume @DEFAULT_SINK@ %d%% 2>/dev/null",
                                         job->volume, job->volume);
-                                if (system(cmd) != 0) {
-                                    // 忽略错误
-                                }
+                                if (system(cmd) != 0) {}
                             }
                             job->result = 0;
                             break;
@@ -457,12 +428,8 @@ jobs:
         }
         
         void audio_stop_async(void) {
-            if (system("pkill -f aplay 2>/dev/null") != 0) {
-                // 忽略错误
-            }
-            if (system("pkill -f paplay 2>/dev/null") != 0) {
-                // 忽略错误
-            }
+            if (system("pkill -f aplay 2>/dev/null") != 0) {}
+            if (system("pkill -f paplay 2>/dev/null") != 0) {}
         }
         
         void audio_set_volume_async(int vol) {
@@ -491,7 +458,7 @@ jobs:
         AUDIO_EOF
         
         # ============================================
-        # server.c - 支持HTTPS
+        # server.c - 仅HTTPS
         # ============================================
         cat > src/server.c << 'SERVER_EOF'
         #include "notification_client.h"
@@ -509,8 +476,6 @@ jobs:
         #include <errno.h>
         #include <fcntl.h>
         #include <poll.h>
-        
-        // 使用系统OpenSSL头文件
         #include <openssl/ssl.h>
         #include <openssl/err.h>
         
@@ -519,10 +484,8 @@ jobs:
         #define READ_TIMEOUT 5000
         
         struct server_s {
-            int http_fd;
             int https_fd;
-            int http_port;
-            int https_port;
+            int port;
             int running;
             int max_conn;
             int current_conn;
@@ -532,13 +495,11 @@ jobs:
             SSL_CTX *ssl_ctx;
             char cert_file[256];
             char key_file[256];
-            int has_ssl;
         };
         
         typedef struct {
             int fd;
             SSL *ssl;
-            int is_https;
             struct sockaddr_in addr;
         } client_t;
         
@@ -603,24 +564,18 @@ jobs:
             return 0;
         }
         
-        static int read_all(int fd, SSL *ssl, int is_https, char *buf, size_t *len, size_t max_len) {
-            struct pollfd pfd = {.fd = fd, .events = POLLIN};
+        static int ssl_read_all(SSL *ssl, char *buf, size_t *len, size_t max_len) {
+            struct pollfd pfd = {.fd = SSL_get_fd(ssl), .events = POLLIN};
             size_t total = 0;
             int ret;
             
             while (total < max_len) {
                 if (poll(&pfd, 1, READ_TIMEOUT) <= 0) return -1;
-                
-                if (is_https && ssl) {
-                    ret = SSL_read(ssl, buf + total, max_len - total);
-                    if (ret <= 0) {
-                        int err = SSL_get_error(ssl, ret);
-                        if (err == SSL_ERROR_WANT_READ || err == SSL_ERROR_WANT_WRITE) continue;
-                        return -1;
-                    }
-                } else {
-                    ret = read(fd, buf + total, max_len - total);
-                    if (ret <= 0) return -1;
+                ret = SSL_read(ssl, buf + total, max_len - total);
+                if (ret <= 0) {
+                    int err = SSL_get_error(ssl, ret);
+                    if (err == SSL_ERROR_WANT_READ || err == SSL_ERROR_WANT_WRITE) continue;
+                    return -1;
                 }
                 total += ret;
                 if (total >= 4 && strstr(buf, "\r\n\r\n")) break;
@@ -629,24 +584,18 @@ jobs:
             return 0;
         }
         
-        static int write_all(int fd, SSL *ssl, int is_https, const char *buf, size_t len) {
+        static int ssl_write_all(SSL *ssl, const char *buf, size_t len) {
             size_t sent = 0;
-            struct pollfd pfd = {.fd = fd, .events = POLLOUT};
+            struct pollfd pfd = {.fd = SSL_get_fd(ssl), .events = POLLOUT};
             int ret;
             
             while (sent < len) {
                 if (poll(&pfd, 1, READ_TIMEOUT) <= 0) return -1;
-                
-                if (is_https && ssl) {
-                    ret = SSL_write(ssl, buf + sent, len - sent);
-                    if (ret <= 0) {
-                        int err = SSL_get_error(ssl, ret);
-                        if (err == SSL_ERROR_WANT_READ || err == SSL_ERROR_WANT_WRITE) continue;
-                        return -1;
-                    }
-                } else {
-                    ret = write(fd, buf + sent, len - sent);
-                    if (ret <= 0) return -1;
+                ret = SSL_write(ssl, buf + sent, len - sent);
+                if (ret <= 0) {
+                    int err = SSL_get_error(ssl, ret);
+                    if (err == SSL_ERROR_WANT_READ || err == SSL_ERROR_WANT_WRITE) continue;
+                    return -1;
                 }
                 sent += ret;
             }
@@ -672,9 +621,8 @@ jobs:
                 int force = (body && strstr(body, "force_wakeup")) ? 1 : 0;
                 int result = audio_play_async("/usr/share/notification-client/sounds/default.wav", force);
                 snprintf(response, sizeof(response),
-                        "{\"action\":\"play\",\"success\":%s,\"async\":true,\"protocol\":\"%s\"}",
-                        result == 0 ? "true" : "false",
-                        client->is_https ? "https" : "http");
+                        "{\"action\":\"play\",\"success\":%s,\"async\":true,\"protocol\":\"https\"}",
+                        result == 0 ? "true" : "false");
                 status = result == 0 ? 200 : 500;
             } else if (strcmp(path, "/api/stop") == 0) {
                 audio_stop_async();
@@ -689,12 +637,12 @@ jobs:
                 }
             } else if (strcmp(path, "/api/status") == 0) {
                 snprintf(response, sizeof(response),
-                        "{\"status\":\"running\",\"device\":%d,\"volume\":%d,\"https\":%d}",
-                        audio_check_device_sync(), audio_get_volume_sync(), client->is_https);
+                        "{\"status\":\"running\",\"device\":%d,\"volume\":%d,\"https\":1}",
+                        audio_check_device_sync(), audio_get_volume_sync());
             } else if (strcmp(path, "/api/info") == 0) {
                 snprintf(response, sizeof(response),
-                        "{\"name\":\"Notification Client\",\"version\":\"%s\",\"arch\":\"mips64el\",\"protocol\":\"%s\"}",
-                        VERSION, client->is_https ? "https" : "http");
+                        "{\"name\":\"Notification Client\",\"version\":\"%s\",\"arch\":\"mips64el\",\"protocol\":\"https\"}",
+                        VERSION);
             } else {
                 status = 404;
                 snprintf(response, sizeof(response), "{\"error\":\"Not found\"}");
@@ -709,8 +657,8 @@ jobs:
                     "\r\n%s",
                     status, strlen(response), response);
             
-            write_all(client->fd, client->ssl, client->is_https, full, strlen(full));
-            if (client->ssl) SSL_free(client->ssl);
+            ssl_write_all(client->ssl, full, strlen(full));
+            SSL_free(client->ssl);
             close(client->fd);
         }
         
@@ -722,7 +670,7 @@ jobs:
                 if (client.fd < 0) continue;
                 char buffer[BUFFER_SIZE] = {0};
                 size_t len = 0;
-                if (read_all(client.fd, client.ssl, client.is_https, buffer, &len, sizeof(buffer)-1) == 0) {
+                if (ssl_read_all(client.ssl, buffer, &len, sizeof(buffer)-1) == 0) {
                     handle_api(&client, buffer, len);
                 } else {
                     if (client.ssl) SSL_free(client.ssl);
@@ -759,40 +707,33 @@ jobs:
         
         server_t* server_create(int port, int max_workers, int max_conn,
                                 const char *cert, const char *key) {
+            if (!cert || !key || access(cert, R_OK) != 0 || access(key, R_OK) != 0) {
+                syslog(LOG_ERR, "SSL certificate or key not found");
+                return NULL;
+            }
+            
             server_t *s = calloc(1, sizeof(server_t));
             if (!s) return NULL;
-            s->http_port = port;
-            s->https_port = port + 443;
+            s->port = port;
             s->worker_count = max_workers;
             s->max_conn = max_conn;
-            s->has_ssl = 0;
             pthread_mutex_init(&s->conn_mutex, NULL);
             
-            // 初始化SSL
-            if (cert && key && access(cert, R_OK) == 0 && access(key, R_OK) == 0) {
-                s->ssl_ctx = init_ssl(cert, key);
-                if (s->ssl_ctx) {
-                    strncpy(s->cert_file, cert, 255);
-                    strncpy(s->key_file, key, 255);
-                    s->https_fd = create_socket(s->https_port);
-                    if (s->https_fd >= 0) {
-                        s->has_ssl = 1;
-                        syslog(LOG_INFO, "HTTPS on port %d", s->https_port);
-                    }
-                }
-            }
-            
-            // HTTP
-            s->http_fd = create_socket(s->http_port);
-            if (s->http_fd >= 0) {
-                syslog(LOG_INFO, "HTTP on port %d", s->http_port);
-            }
-            
-            if (s->http_fd < 0 && s->https_fd < 0) {
-                if (s->ssl_ctx) SSL_CTX_free(s->ssl_ctx);
+            s->ssl_ctx = init_ssl(cert, key);
+            if (!s->ssl_ctx) {
                 free(s);
                 return NULL;
             }
+            strncpy(s->cert_file, cert, 255);
+            strncpy(s->key_file, key, 255);
+            
+            s->https_fd = create_socket(port);
+            if (s->https_fd < 0) {
+                SSL_CTX_free(s->ssl_ctx);
+                free(s);
+                return NULL;
+            }
+            syslog(LOG_INFO, "HTTPS on port %d", port);
             
             audio_worker_init(2);
             s->workers = malloc(sizeof(pthread_t) * max_workers);
@@ -800,7 +741,7 @@ jobs:
                 pthread_create(&s->workers[i], NULL, worker_thread, s);
             }
             
-            syslog(LOG_INFO, "Server created: HTTP=%d, HTTPS=%d", s->http_port, s->https_port);
+            syslog(LOG_INFO, "Server created: HTTPS=%d", port);
             return s;
         }
         
@@ -810,7 +751,6 @@ jobs:
             for (int i = 0; i < s->worker_count; i++) {
                 pthread_join(s->workers[i], NULL);
             }
-            if (s->http_fd >= 0) close(s->http_fd);
             if (s->https_fd >= 0) close(s->https_fd);
             if (s->ssl_ctx) SSL_CTX_free(s->ssl_ctx);
             pthread_mutex_destroy(&s->conn_mutex);
@@ -827,62 +767,54 @@ jobs:
             int epfd = epoll_create1(0);
             struct epoll_event ev, events[MAX_EVENTS];
             
-            if (s->http_fd >= 0) {
-                ev.events = EPOLLIN;
-                ev.data.fd = s->http_fd;
-                epoll_ctl(epfd, EPOLL_CTL_ADD, s->http_fd, &ev);
-            }
-            if (s->https_fd >= 0) {
-                ev.events = EPOLLIN;
-                ev.data.fd = s->https_fd;
-                epoll_ctl(epfd, EPOLL_CTL_ADD, s->https_fd, &ev);
-            }
+            ev.events = EPOLLIN;
+            ev.data.fd = s->https_fd;
+            epoll_ctl(epfd, EPOLL_CTL_ADD, s->https_fd, &ev);
             
-            syslog(LOG_INFO, "Server running");
+            syslog(LOG_INFO, "HTTPS server running");
             
             while (s->running) {
                 int n = epoll_wait(epfd, events, MAX_EVENTS, 100);
                 for (int i = 0; i < n; i++) {
-                    int fd = events[i].data.fd;
-                    int is_https = (fd == s->https_fd);
-                    
-                    struct sockaddr_in addr;
-                    socklen_t addr_len = sizeof(addr);
-                    int client_fd = accept4(fd, (struct sockaddr*)&addr, &addr_len, SOCK_NONBLOCK);
-                    if (client_fd < 0) continue;
-                    
-                    pthread_mutex_lock(&s->conn_mutex);
-                    if (s->current_conn >= s->max_conn) {
-                        pthread_mutex_unlock(&s->conn_mutex);
-                        close(client_fd);
-                        continue;
-                    }
-                    s->current_conn++;
-                    pthread_mutex_unlock(&s->conn_mutex);
-                    
-                    client_t client;
-                    client.fd = client_fd;
-                    client.addr = addr;
-                    client.is_https = is_https;
-                    client.ssl = NULL;
-                    
-                    if (is_https && s->has_ssl && s->ssl_ctx) {
-                        SSL *ssl = SSL_new(s->ssl_ctx);
-                        if (ssl) {
-                            SSL_set_fd(ssl, client_fd);
-                            if (SSL_accept(ssl) <= 0) {
-                                SSL_free(ssl);
-                                close(client_fd);
-                                pthread_mutex_lock(&s->conn_mutex);
-                                s->current_conn--;
-                                pthread_mutex_unlock(&s->conn_mutex);
-                                continue;
-                            }
-                            client.ssl = ssl;
+                    if (events[i].data.fd == s->https_fd) {
+                        struct sockaddr_in addr;
+                        socklen_t addr_len = sizeof(addr);
+                        int client_fd = accept4(s->https_fd, (struct sockaddr*)&addr, &addr_len, SOCK_NONBLOCK);
+                        if (client_fd < 0) continue;
+                        
+                        pthread_mutex_lock(&s->conn_mutex);
+                        if (s->current_conn >= s->max_conn) {
+                            pthread_mutex_unlock(&s->conn_mutex);
+                            close(client_fd);
+                            continue;
                         }
+                        s->current_conn++;
+                        pthread_mutex_unlock(&s->conn_mutex);
+                        
+                        SSL *ssl = SSL_new(s->ssl_ctx);
+                        if (!ssl) {
+                            close(client_fd);
+                            pthread_mutex_lock(&s->conn_mutex);
+                            s->current_conn--;
+                            pthread_mutex_unlock(&s->conn_mutex);
+                            continue;
+                        }
+                        SSL_set_fd(ssl, client_fd);
+                        if (SSL_accept(ssl) <= 0) {
+                            SSL_free(ssl);
+                            close(client_fd);
+                            pthread_mutex_lock(&s->conn_mutex);
+                            s->current_conn--;
+                            pthread_mutex_unlock(&s->conn_mutex);
+                            continue;
+                        }
+                        
+                        client_t client;
+                        client.fd = client_fd;
+                        client.addr = addr;
+                        client.ssl = ssl;
+                        enqueue_task(&client);
                     }
-                    
-                    enqueue_task(&client);
                 }
             }
             close(epfd);
@@ -908,7 +840,7 @@ jobs:
         #include <getopt.h>
         #include <sys/stat.h>
         
-        #define DEFAULT_PORT 8080
+        #define DEFAULT_PORT 8443
         #define DEFAULT_CERT "/etc/notification-client/server.crt"
         #define DEFAULT_KEY "/etc/notification-client/server.key"
         
@@ -934,16 +866,15 @@ jobs:
         }
         
         void usage(char *prog) {
-            printf("Notification Client v%s\n", VERSION);
+            printf("Notification Client v%s (HTTPS Only)\n", VERSION);
             printf("Usage: %s [OPTIONS]\n", prog);
             printf("  -d, --daemon          Run as daemon\n");
-            printf("  -p, --port PORT       HTTP port (default: 8080)\n");
+            printf("  -p, --port PORT       HTTPS port (default: 8443)\n");
             printf("  -w, --workers N       Worker threads (default: 4)\n");
             printf("  --cert FILE           SSL certificate file\n");
             printf("  --key FILE            SSL private key file\n");
             printf("  -h, --help            Show help\n");
             printf("  -v, --version         Show version\n");
-            printf("\nHTTPS port: HTTP port + 443 (e.g., 8443)\n");
         }
         
         int main(int argc, char *argv[]) {
@@ -984,11 +915,9 @@ jobs:
             signal(SIGTERM, signal_handler);
             signal(SIGHUP, signal_handler);
             
-            syslog(LOG_INFO, "Starting Notification Client v%s", VERSION);
+            syslog(LOG_INFO, "Starting Notification Client v%s (HTTPS only)", VERSION);
             
-            server_t *s = server_create(port, workers, max_conn,
-                                        access(cert, R_OK) == 0 ? cert : NULL,
-                                        access(key, R_OK) == 0 ? key : NULL);
+            server_t *s = server_create(port, workers, max_conn, cert, key);
             if (!s) {
                 syslog(LOG_ERR, "Server creation failed");
                 return 1;
@@ -1012,10 +941,7 @@ jobs:
         echo "AR=mips64el-linux-gnuabi64-ar" >> $GITHUB_ENV
         echo "STRIP=mips64el-linux-gnuabi64-strip" >> $GITHUB_ENV
         
-        # 使用系统OpenSSL头文件
-        echo "CPPFLAGS=-I/usr/include" >> $GITHUB_ENV
-        
-        # 添加自定义库路径
+        # 添加库路径
         if [ -d "$PWD/deps/mips64el/usr/lib/notification-client" ]; then
           echo "LDFLAGS=-L$PWD/deps/mips64el/usr/lib/notification-client -lpthread -ldl -lssl -lcrypto" >> $GITHUB_ENV
         fi
@@ -1107,7 +1033,6 @@ jobs:
         {
           "default_sound": "/usr/share/notification-client/sounds/default.wav",
           "default_volume": 80,
-          "http_port": 8080,
           "https_port": 8443,
           "audio_device": "default",
           "enable_wakeup": true,
@@ -1130,7 +1055,7 @@ jobs:
         # systemd服务
         cat > package/lib/systemd/system/notification-client.service << 'SERVICE_EOF'
         [Unit]
-        Description=Notification Client for Kylin V10 (HTTPS)
+        Description=Notification Client for Kylin V10 (HTTPS Only)
         After=network.target sound.target
         Wants=network.target
 
@@ -1140,7 +1065,7 @@ jobs:
         Group=nogroup
         Environment="LD_LIBRARY_PATH=/usr/lib/notification-client"
         Environment="PATH=/usr/lib/notification-client/bin:/usr/bin:/bin"
-        ExecStart=/usr/bin/notification-client-wrapper -d -p 8080 -w 4
+        ExecStart=/usr/bin/notification-client-wrapper -d -p 8443 -w 4
         Restart=always
         RestartSec=10
         StandardOutput=syslog
@@ -1153,21 +1078,19 @@ jobs:
         
         # 文档
         cat > package/usr/share/doc/notification-client/README << 'README_EOF'
-        Notification Client for Kylin V10 (MIPS64el) - HTTPS Enabled
+        Notification Client for Kylin V10 (MIPS64el) - HTTPS Only
         
         端口:
-        - HTTP: 8080
-        - HTTPS: 8443
+        - HTTPS: 8443 (默认)
         
         使用:
         sudo systemctl start notification-client
-        curl http://localhost:8080/api/status
         curl -k https://localhost:8443/api/status
         curl -X POST -k https://localhost:8443/api/play
         
-        浏览器访问: 
-        - http://IP:8080
-        - https://IP:8443 (需要添加证书例外)
+        浏览器访问: https://IP:8443 (需要添加证书例外)
+        
+        所有API都通过HTTPS加密传输。
         README_EOF
         
     - name: Create DEBIAN control
@@ -1190,9 +1113,9 @@ jobs:
         Depends: libc6 (>= 2.28), systemd, openssl
         Suggests: sox
         Description: Notification audio playback client for Kylin V10
-         Full-featured notification client with HTTPS support.
+         HTTPS-only notification client with full encryption.
          Features:
-          - HTTP + HTTPS dual protocol support
+          - HTTPS REST API (encrypted)
           - Async audio playback with thread pool
           - Embedded audio players (aplay, paplay)
           - Auto-start at boot (systemd)
