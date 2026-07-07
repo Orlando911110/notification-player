@@ -1,4 +1,4 @@
-name: Build MIPS64el DEB Package (Full Embedded Dependencies)
+name: Build MIPS64el Notification Client for Kylin V10
 
 on:
   push:
@@ -17,21 +17,10 @@ jobs:
     - name: Checkout code
       uses: actions/checkout@v4
       
-    - name: Configure Kylin software sources and download all dependencies
+    - name: Install cross compiler and dependencies
       run: |
-        # 配置麒麟源
-        sudo cp /etc/apt/sources.list /etc/apt/sources.list.bak
-        sudo tee /etc/apt/sources.list << 'EOF'
-        # 麒麟V10 SP1 软件源
-        deb https://update.cs2c.com.cn/NS/V10/V10SP1.1/os/adv/lic/updates/mips64el/ ./
-        deb https://update.cs2c.com.cn/NS/V10/V10SP1.1/os/adv/lic/updates/mips64el/ updates/
-        EOF
-        
-        # 添加mips64el架构支持
-        sudo dpkg --add-architecture mips64el
-        sudo apt-get update || true
-        
-        # 安装交叉编译工具链
+        # 安装交叉编译工具链（不依赖麒麟源）
+        sudo apt-get update
         sudo apt-get install -y \
           gcc-mips64el-linux-gnuabi64 \
           g++-mips64el-linux-gnuabi64 \
@@ -45,93 +34,75 @@ jobs:
           libsox-dev \
           pkg-config \
           wget \
-          curl || true
+          curl \
+          openssl \
+          libssl-dev || true
         
-        # 下载所有MIPS64el架构的依赖库及其依赖
-        echo "=== 下载所有MIPS64el依赖库 ==="
+        # 验证编译器
+        echo "=== 验证交叉编译工具链 ==="
+        mips64el-linux-gnuabi64-gcc --version || echo "gcc not found"
         
         # 创建依赖目录
-        mkdir -p deps/mips64el/usr/lib
-        mkdir -p deps/mips64el/usr/lib/mips64el-linux-gnuabi64
+        mkdir -p deps/mips64el/usr/lib/notification-client
+        mkdir -p deps/mips64el/usr/lib/notification-client/bin
         
-        # 下载并提取依赖包
-        sudo apt-get install -y \
-          libasound2:mips64el \
-          libpulse0:mips64el \
-          libjson-c5:mips64el \
-          libpulsecommon-13.0:mips64el \
-          libsndfile1:mips64el \
-          libltdl7:mips64el \
-          libtdb1:mips64el \
-          libsystemd0:mips64el \
-          libgcrypt20:mips64el \
-          libgpg-error0:mips64el \
-          liblz4-1:mips64el \
-          libzstd1:mips64el \
-          libc6:mips64el \
-          libcap2:mips64el \
-          libffi8:mips64el \
-          libssl3:mips64el \
-          libcrypto3:mips64el || true
+        # 尝试从系统复制库文件（如果有）
+        echo "=== 尝试复制系统库文件 ==="
+        if [ -d "/usr/lib/mips64el-linux-gnuabi64" ]; then
+          find /usr/lib/mips64el-linux-gnuabi64 -name "*.so*" -type f 2>/dev/null | while read lib; do
+            cp -v "$lib" deps/mips64el/usr/lib/notification-client/ 2>/dev/null || true
+          done
+        fi
         
-        # 复制所有MIPS64el库文件到deps目录
-        echo "=== 复制MIPS64el库文件 ==="
-        
-        # 从系统库目录复制
-        find /usr/lib/mips64el-linux-gnuabi64 -name "*.so*" -type f 2>/dev/null | while read lib; do
-          echo "Copying: $lib"
-          cp -v "$lib" deps/mips64el/usr/lib/mips64el-linux-gnuabi64/ 2>/dev/null || true
-        done
-        
-        # 也检查其他可能的库目录
-        find /usr/lib -name "*.so*" -path "*/mips64el*" -type f 2>/dev/null | while read lib; do
-          echo "Copying: $lib"
-          cp -v "$lib" deps/mips64el/usr/lib/mips64el-linux-gnuabi64/ 2>/dev/null || true
-        done
-        
-        # 创建符号链接
-        echo "=== 创建库符号链接 ==="
-        cd deps/mips64el/usr/lib/mips64el-linux-gnuabi64
-        for lib in *.so.*; do
-          if [ -f "$lib" ]; then
-            base_name=$(echo "$lib" | cut -d. -f1)
-            if [ ! -f "${base_name}.so" ] && [ ! -L "${base_name}.so" ]; then
-              ln -sf "$lib" "${base_name}.so" 2>/dev/null || true
-              echo "Created link: ${base_name}.so -> $lib"
-            fi
-          fi
-        done
-        cd ../../../..
-        
-        # 统计库文件
+        # 统计
         echo "=== 库文件统计 ==="
-        find deps/mips64el -name "*.so*" -type f | wc -l
-        du -sh deps/mips64el
+        if [ -d "deps/mips64el/usr/lib/notification-client" ]; then
+          echo "库文件数量: $(ls -1 deps/mips64el/usr/lib/notification-client/*.so* 2>/dev/null | wc -l)"
+          du -sh deps/mips64el 2>/dev/null || echo "目录为空"
+        else
+          echo "依赖目录不存在，将使用空目录"
+          mkdir -p deps/mips64el/usr/lib/notification-client
+        fi
         
-    - name: Create all source files
+    - name: Generate SSL certificate
+      run: |
+        echo "=== 生成SSL证书 ==="
+        mkdir -p certs
+        openssl req -x509 -newkey rsa:2048 -nodes \
+          -keyout certs/server.key \
+          -out certs/server.crt \
+          -days 3650 \
+          -subj "/C=CN/ST=Beijing/L=Beijing/O=Kylin/CN=notification-server" 2>/dev/null
+        chmod 600 certs/server.key 2>/dev/null || true
+        chmod 644 certs/server.crt 2>/dev/null || true
+        echo "证书生成完成"
+        
+    - name: Create source files
       run: |
         mkdir -p src
         
         # ============================================
-        # audio_worker.h
+        # notification_client.h
         # ============================================
-        cat > src/audio_worker.h << 'AUDIO_WORKER_H_EOF'
-        #ifndef AUDIO_WORKER_H
-        #define AUDIO_WORKER_H
+        cat > src/notification_client.h << 'HEADER_EOF'
+        #ifndef NOTIFICATION_CLIENT_H
+        #define NOTIFICATION_CLIENT_H
         
         #include <stdint.h>
         #include <pthread.h>
         
+        #define VERSION "3.0.0"
+        
         typedef enum {
-            AUDIO_CMD_PLAY,
-            AUDIO_CMD_STOP,
-            AUDIO_CMD_SET_VOLUME,
-            AUDIO_CMD_GET_VOLUME,
-            AUDIO_CMD_CHECK_DEVICE
-        } audio_command_type_t;
+            CMD_PLAY,
+            CMD_STOP,
+            CMD_SET_VOLUME,
+            CMD_GET_VOLUME,
+            CMD_CHECK_DEVICE
+        } audio_cmd_type_t;
         
         typedef struct {
-            audio_command_type_t type;
+            audio_cmd_type_t type;
             char sound_file[256];
             int force_wakeup;
             int volume;
@@ -144,66 +115,95 @@ jobs:
         int audio_worker_init(int num_workers);
         void audio_worker_cleanup(void);
         int audio_play_async(const char *filename, int force_wakeup);
-        int audio_play_sync(const char *filename, int force_wakeup);
         void audio_stop_async(void);
         void audio_set_volume_async(int volume);
         int audio_get_volume_sync(void);
         int audio_check_device_sync(void);
         
+        typedef struct server_s server_t;
+        server_t* server_create(int port, int max_workers, int max_connections,
+                                const char *cert_file, const char *key_file);
+        void server_destroy(server_t *server);
+        void server_run(server_t *server);
+        void server_stop(server_t *server);
+        
         #endif
-        AUDIO_WORKER_H_EOF
+        HEADER_EOF
         
         # ============================================
         # audio_worker.c
         # ============================================
-        cat > src/audio_worker.c << 'AUDIO_WORKER_C_EOF'
-        #include "audio_worker.h"
+        cat > src/audio_worker.c << 'AUDIO_EOF'
+        #include "notification_client.h"
         #include <stdio.h>
         #include <stdlib.h>
         #include <string.h>
         #include <unistd.h>
         #include <syslog.h>
-        #include <pthread.h>
         #include <errno.h>
         #include <sys/wait.h>
         #include <signal.h>
         
-        #define MAX_QUEUE_SIZE 100
+        #define MAX_QUEUE 100
         #define MAX_WORKERS 4
+        #define PLAYER_PATH "/usr/lib/notification-client/bin"
         
         typedef struct {
-            audio_job_t *jobs[MAX_QUEUE_SIZE];
-            int head;
-            int tail;
-            int count;
+            audio_job_t *jobs[MAX_QUEUE];
+            int head, tail, count;
             pthread_mutex_t mutex;
-            pthread_cond_t not_empty;
-            pthread_cond_t not_full;
-        } job_queue_t;
+            pthread_cond_t not_empty, not_full;
+        } queue_t;
         
-        static job_queue_t queue;
+        static queue_t queue;
         static pthread_t workers[MAX_WORKERS];
         static int worker_count = 0;
-        static int audio_initialized = 0;
-        static int current_volume = 80;
-        static pthread_mutex_t volume_mutex = PTHREAD_MUTEX_INITIALIZER;
+        static int initialized = 0;
+        static int volume = 80;
+        static pthread_mutex_t vol_mutex = PTHREAD_MUTEX_INITIALIZER;
+        static int has_aplay = 0, has_paplay = 0;
         
-        static int play_audio_external(const char *filename, int force_wakeup) {
-            pid_t pid;
-            int status;
+        static void detect_players(void) {
+            char path[256];
+            snprintf(path, sizeof(path), "%s/aplay", PLAYER_PATH);
+            has_aplay = (access(path, X_OK) == 0);
+            if (!has_aplay) has_aplay = (access("/usr/bin/aplay", X_OK) == 0);
             
-            pid = fork();
+            snprintf(path, sizeof(path), "%s/paplay", PLAYER_PATH);
+            has_paplay = (access(path, X_OK) == 0);
+            if (!has_paplay) has_paplay = (access("/usr/bin/paplay", X_OK) == 0);
+            
+            syslog(LOG_INFO, "Players: aplay=%d, paplay=%d", has_aplay, has_paplay);
+        }
+        
+        static int play_audio(const char *filename, int force_wakeup) {
+            char player[256] = {0};
+            
+            if (has_aplay) {
+                snprintf(player, sizeof(player), "%s/aplay", PLAYER_PATH);
+                if (access(player, X_OK) != 0) snprintf(player, sizeof(player), "/usr/bin/aplay");
+            } else if (has_paplay) {
+                snprintf(player, sizeof(player), "%s/paplay", PLAYER_PATH);
+                if (access(player, X_OK) != 0) snprintf(player, sizeof(player), "/usr/bin/paplay");
+            } else {
+                syslog(LOG_ERR, "No audio player");
+                return -1;
+            }
+            
+            pid_t pid = fork();
             if (pid == 0) {
+                char lib_path[512];
+                snprintf(lib_path, sizeof(lib_path), 
+                        "LD_LIBRARY_PATH=/usr/lib/notification-client:/usr/lib/mips64el-linux-gnuabi64:$LD_LIBRARY_PATH");
+                putenv(lib_path);
                 if (force_wakeup) {
                     execlp("systemd-inhibit", "systemd-inhibit", 
-                           "--why=Notification", "--mode=block", 
-                           "sleep", "1", NULL);
+                           "--why=Notification", "--mode=block", player, filename, NULL);
                 }
-                execlp("aplay", "aplay", filename, NULL);
-                execlp("paplay", "paplay", filename, NULL);
+                execl(player, player, filename, NULL);
                 exit(1);
             } else if (pid > 0) {
-                int timeout = 30;
+                int status, timeout = 30;
                 while (timeout > 0) {
                     if (waitpid(pid, &status, WNOHANG) > 0) {
                         return WIFEXITED(status) && WEXITSTATUS(status) == 0 ? 0 : -1;
@@ -218,28 +218,27 @@ jobs:
             return -1;
         }
         
-        static void* audio_worker_thread(void *arg) {
+        static void* worker_thread(void *arg) {
             (void)arg;
+            detect_players();
             while (1) {
                 pthread_mutex_lock(&queue.mutex);
-                while (queue.count == 0) {
-                    pthread_cond_wait(&queue.not_empty, &queue.mutex);
-                }
+                while (queue.count == 0) pthread_cond_wait(&queue.not_empty, &queue.mutex);
                 audio_job_t *job = queue.jobs[queue.head];
-                queue.head = (queue.head + 1) % MAX_QUEUE_SIZE;
+                queue.head = (queue.head + 1) % MAX_QUEUE;
                 queue.count--;
                 pthread_cond_signal(&queue.not_full);
                 pthread_mutex_unlock(&queue.mutex);
                 
                 if (job) {
                     switch (job->type) {
-                        case AUDIO_CMD_PLAY:
-                            job->result = play_audio_external(job->sound_file, job->force_wakeup);
+                        case CMD_PLAY:
+                            job->result = play_audio(job->sound_file, job->force_wakeup);
                             break;
-                        case AUDIO_CMD_SET_VOLUME:
-                            pthread_mutex_lock(&volume_mutex);
-                            current_volume = job->volume;
-                            pthread_mutex_unlock(&volume_mutex);
+                        case CMD_SET_VOLUME:
+                            pthread_mutex_lock(&vol_mutex);
+                            volume = job->volume;
+                            pthread_mutex_unlock(&vol_mutex);
                             {
                                 char cmd[128];
                                 snprintf(cmd, sizeof(cmd), 
@@ -262,34 +261,25 @@ jobs:
             return NULL;
         }
         
-        int audio_worker_init(int num_workers) {
-            if (audio_initialized) return 0;
-            if (num_workers <= 0 || num_workers > MAX_WORKERS) num_workers = MAX_WORKERS;
-            
-            queue.head = 0;
-            queue.tail = 0;
-            queue.count = 0;
+        int audio_worker_init(int num) {
+            if (initialized) return 0;
+            if (num <= 0 || num > MAX_WORKERS) num = MAX_WORKERS;
+            queue.head = queue.tail = queue.count = 0;
             pthread_mutex_init(&queue.mutex, NULL);
             pthread_cond_init(&queue.not_empty, NULL);
             pthread_cond_init(&queue.not_full, NULL);
-            
-            worker_count = num_workers;
+            worker_count = num;
             for (int i = 0; i < worker_count; i++) {
-                if (pthread_create(&workers[i], NULL, audio_worker_thread, NULL) != 0) {
-                    syslog(LOG_ERR, "Failed to create audio worker thread %d", i);
-                    worker_count = i;
-                    break;
-                }
+                pthread_create(&workers[i], NULL, worker_thread, NULL);
             }
-            
-            audio_initialized = 1;
-            syslog(LOG_INFO, "Audio worker initialized with %d threads", worker_count);
+            initialized = 1;
+            syslog(LOG_INFO, "Audio worker: %d threads", worker_count);
             return 0;
         }
         
         void audio_worker_cleanup(void) {
-            if (!audio_initialized) return;
-            audio_initialized = 0;
+            if (!initialized) return;
+            initialized = 0;
             for (int i = 0; i < worker_count; i++) {
                 pthread_cancel(workers[i]);
                 pthread_join(workers[i], NULL);
@@ -297,17 +287,15 @@ jobs:
             pthread_mutex_destroy(&queue.mutex);
             pthread_cond_destroy(&queue.not_empty);
             pthread_cond_destroy(&queue.not_full);
-            syslog(LOG_INFO, "Audio worker cleaned up");
+            syslog(LOG_INFO, "Audio worker cleaned");
         }
         
-        static int enqueue_job(audio_job_t *job) {
-            if (!audio_initialized) return -1;
+        static int enqueue(audio_job_t *job) {
+            if (!initialized) return -1;
             pthread_mutex_lock(&queue.mutex);
-            while (queue.count >= MAX_QUEUE_SIZE) {
-                pthread_cond_wait(&queue.not_full, &queue.mutex);
-            }
+            while (queue.count >= MAX_QUEUE) pthread_cond_wait(&queue.not_full, &queue.mutex);
             queue.jobs[queue.tail] = job;
-            queue.tail = (queue.tail + 1) % MAX_QUEUE_SIZE;
+            queue.tail = (queue.tail + 1) % MAX_QUEUE;
             queue.count++;
             pthread_cond_signal(&queue.not_empty);
             pthread_mutex_unlock(&queue.mutex);
@@ -318,39 +306,12 @@ jobs:
             audio_job_t *job = malloc(sizeof(audio_job_t));
             if (!job) return -1;
             memset(job, 0, sizeof(audio_job_t));
-            job->type = AUDIO_CMD_PLAY;
+            job->type = CMD_PLAY;
             strncpy(job->sound_file, filename, 255);
             job->sound_file[255] = '\0';
             job->force_wakeup = force_wakeup;
             job->completed = 1;
-            return enqueue_job(job);
-        }
-        
-        int audio_play_sync(const char *filename, int force_wakeup) {
-            audio_job_t job;
-            memset(&job, 0, sizeof(job));
-            job.type = AUDIO_CMD_PLAY;
-            strncpy(job.sound_file, filename, 255);
-            job.sound_file[255] = '\0';
-            job.force_wakeup = force_wakeup;
-            job.completed = 0;
-            pthread_mutex_init(&job.mutex, NULL);
-            pthread_cond_init(&job.cond, NULL);
-            
-            if (enqueue_job(&job) < 0) {
-                pthread_mutex_destroy(&job.mutex);
-                pthread_cond_destroy(&job.cond);
-                return -1;
-            }
-            
-            pthread_mutex_lock(&job.mutex);
-            while (!job.completed) {
-                pthread_cond_wait(&job.cond, &job.mutex);
-            }
-            pthread_mutex_unlock(&job.mutex);
-            pthread_mutex_destroy(&job.mutex);
-            pthread_cond_destroy(&job.cond);
-            return job.result;
+            return enqueue(job);
         }
         
         void audio_stop_async(void) {
@@ -358,58 +319,36 @@ jobs:
             (void)system("pkill -f paplay 2>/dev/null");
         }
         
-        void audio_set_volume_async(int volume) {
-            if (volume < 0) volume = 0;
-            if (volume > 100) volume = 100;
+        void audio_set_volume_async(int vol) {
+            if (vol < 0) vol = 0;
+            if (vol > 100) vol = 100;
             audio_job_t *job = malloc(sizeof(audio_job_t));
             if (!job) return;
             memset(job, 0, sizeof(audio_job_t));
-            job->type = AUDIO_CMD_SET_VOLUME;
-            job->volume = volume;
+            job->type = CMD_SET_VOLUME;
+            job->volume = vol;
             job->completed = 1;
-            enqueue_job(job);
+            enqueue(job);
         }
         
         int audio_get_volume_sync(void) {
-            pthread_mutex_lock(&volume_mutex);
-            int vol = current_volume;
-            pthread_mutex_unlock(&volume_mutex);
-            return vol;
+            pthread_mutex_lock(&vol_mutex);
+            int v = volume;
+            pthread_mutex_unlock(&vol_mutex);
+            return v;
         }
         
         int audio_check_device_sync(void) {
-            int ret = system("aplay -l 2>/dev/null | grep -q card");
-            if (ret != 0) {
-                ret = system("pactl info > /dev/null 2>&1");
-            }
-            return ret == 0 ? 1 : 0;
+            return (system("aplay -l 2>/dev/null | grep -q card") == 0) ||
+                   (system("pactl info > /dev/null 2>&1") == 0);
         }
-        AUDIO_WORKER_C_EOF
+        AUDIO_EOF
         
         # ============================================
-        # http_server_optimized.h
+        # server.c
         # ============================================
-        cat > src/http_server_optimized.h << 'HTTP_OPT_H_EOF'
-        #ifndef HTTP_SERVER_OPTIMIZED_H
-        #define HTTP_SERVER_OPTIMIZED_H
-        
-        #include <stdint.h>
-        
-        typedef struct http_server_opt_s http_server_opt_t;
-        
-        http_server_opt_t* http_server_opt_create(int port, int max_workers, int max_connections);
-        void http_server_opt_destroy(http_server_opt_t *server);
-        void http_server_opt_run(http_server_opt_t *server);
-        void http_server_opt_stop(http_server_opt_t *server);
-        
-        #endif
-        HTTP_OPT_H_EOF
-        
-        # ============================================
-        # http_server_optimized.c
-        # ============================================
-        cat > src/http_server_optimized.c << 'HTTP_OPT_C_EOF'
-        #include "http_server_optimized.h"
+        cat > src/server.c << 'SERVER_EOF'
+        #include "notification_client.h"
         #include <stdio.h>
         #include <stdlib.h>
         #include <string.h>
@@ -423,116 +362,166 @@ jobs:
         #include <syslog.h>
         #include <errno.h>
         #include <fcntl.h>
-        #include <time.h>
-        #include <signal.h>
         #include <poll.h>
-        #include "audio_worker.h"
+        #include <openssl/ssl.h>
+        #include <openssl/err.h>
         
         #define MAX_EVENTS 64
         #define BUFFER_SIZE 8192
-        #define READ_TIMEOUT_MS 5000
+        #define READ_TIMEOUT 5000
         
-        struct http_server_opt_s {
-            int epoll_fd;
-            int server_fd;
-            int port;
+        struct server_s {
+            int http_fd;
+            int https_fd;
+            int http_port;
+            int https_port;
             int running;
-            int max_connections;
-            int current_connections;
-            pthread_t *worker_threads;
+            int max_conn;
+            int current_conn;
+            pthread_t *workers;
             int worker_count;
             pthread_mutex_t conn_mutex;
+            SSL_CTX *ssl_ctx;
+            char cert_file[256];
+            char key_file[256];
         };
         
+        typedef struct {
+            int fd;
+            SSL *ssl;
+            int is_https;
+            struct sockaddr_in addr;
+        } client_t;
+        
         typedef struct task_s {
-            int client_fd;
+            client_t client;
             struct task_s *next;
         } task_t;
         
-        static task_t *task_queue_head = NULL;
-        static task_t *task_queue_tail = NULL;
+        static task_t *task_head = NULL, *task_tail = NULL;
         static pthread_mutex_t task_mutex = PTHREAD_MUTEX_INITIALIZER;
         static pthread_cond_t task_cond = PTHREAD_COND_INITIALIZER;
         
-        static void enqueue_task(int client_fd) {
+        static SSL_CTX* init_ssl(const char *cert, const char *key) {
+            SSL_library_init();
+            OpenSSL_add_all_algorithms();
+            SSL_load_error_strings();
+            SSL_CTX *ctx = SSL_CTX_new(TLS_server_method());
+            if (!ctx) { syslog(LOG_ERR, "SSL_CTX_new failed"); return NULL; }
+            SSL_CTX_set_min_proto_version(ctx, TLS1_2_VERSION);
+            if (SSL_CTX_use_certificate_file(ctx, cert, SSL_FILETYPE_PEM) <= 0) {
+                syslog(LOG_ERR, "Certificate load failed: %s", cert);
+                SSL_CTX_free(ctx); return NULL;
+            }
+            if (SSL_CTX_use_PrivateKey_file(ctx, key, SSL_FILETYPE_PEM) <= 0) {
+                syslog(LOG_ERR, "Private key load failed: %s", key);
+                SSL_CTX_free(ctx); return NULL;
+            }
+            if (!SSL_CTX_check_private_key(ctx)) {
+                syslog(LOG_ERR, "Key/cert mismatch");
+                SSL_CTX_free(ctx); return NULL;
+            }
+            syslog(LOG_INFO, "SSL initialized");
+            return ctx;
+        }
+        
+        static void enqueue_task(client_t *client) {
             task_t *task = malloc(sizeof(task_t));
-            if (!task) { close(client_fd); return; }
-            task->client_fd = client_fd;
+            if (!task) {
+                if (client->ssl) SSL_free(client->ssl);
+                close(client->fd);
+                return;
+            }
+            task->client = *client;
             task->next = NULL;
             pthread_mutex_lock(&task_mutex);
-            if (task_queue_tail) {
-                task_queue_tail->next = task;
-            } else {
-                task_queue_head = task;
-            }
-            task_queue_tail = task;
+            if (task_tail) task_tail->next = task;
+            else task_head = task;
+            task_tail = task;
             pthread_cond_signal(&task_cond);
             pthread_mutex_unlock(&task_mutex);
         }
         
-        static int dequeue_task(void) {
+        static int dequeue_task(client_t *client) {
             pthread_mutex_lock(&task_mutex);
-            while (!task_queue_head) {
-                pthread_cond_wait(&task_cond, &task_mutex);
-            }
-            task_t *task = task_queue_head;
-            task_queue_head = task->next;
-            if (!task_queue_head) task_queue_tail = NULL;
-            int fd = task->client_fd;
+            while (!task_head) pthread_cond_wait(&task_cond, &task_mutex);
+            task_t *task = task_head;
+            task_head = task->next;
+            if (!task_head) task_tail = NULL;
+            *client = task->client;
             free(task);
             pthread_mutex_unlock(&task_mutex);
-            return fd;
+            return 0;
         }
         
-        static int read_all(int fd, char *buffer, size_t *len, size_t max_len, int timeout_ms) {
+        static int read_all(int fd, SSL *ssl, int is_https, char *buf, size_t *len, size_t max_len) {
             struct pollfd pfd = {.fd = fd, .events = POLLIN};
             size_t total = 0;
+            int ret;
             while (total < max_len) {
-                int ret = poll(&pfd, 1, timeout_ms);
-                if (ret <= 0) return -1;
-                ssize_t n = read(fd, buffer + total, max_len - total);
-                if (n <= 0) return -1;
-                total += n;
-                if (total >= 4 && strstr(buffer, "\r\n\r\n")) break;
+                if (poll(&pfd, 1, READ_TIMEOUT) <= 0) return -1;
+                if (is_https && ssl) {
+                    ret = SSL_read(ssl, buf + total, max_len - total);
+                    if (ret <= 0) {
+                        int err = SSL_get_error(ssl, ret);
+                        if (err == SSL_ERROR_WANT_READ || err == SSL_ERROR_WANT_WRITE) continue;
+                        return -1;
+                    }
+                } else {
+                    ret = read(fd, buf + total, max_len - total);
+                    if (ret <= 0) return -1;
+                }
+                total += ret;
+                if (total >= 4 && strstr(buf, "\r\n\r\n")) break;
             }
             *len = total;
             return 0;
         }
         
-        static int write_all(int fd, const char *buffer, size_t len, int timeout_ms) {
+        static int write_all(int fd, SSL *ssl, int is_https, const char *buf, size_t len) {
             size_t sent = 0;
             struct pollfd pfd = {.fd = fd, .events = POLLOUT};
+            int ret;
             while (sent < len) {
-                int ret = poll(&pfd, 1, timeout_ms);
-                if (ret <= 0) return -1;
-                ssize_t n = write(fd, buffer + sent, len - sent);
-                if (n <= 0) return -1;
-                sent += n;
+                if (poll(&pfd, 1, READ_TIMEOUT) <= 0) return -1;
+                if (is_https && ssl) {
+                    ret = SSL_write(ssl, buf + sent, len - sent);
+                    if (ret <= 0) {
+                        int err = SSL_get_error(ssl, ret);
+                        if (err == SSL_ERROR_WANT_READ || err == SSL_ERROR_WANT_WRITE) continue;
+                        return -1;
+                    }
+                } else {
+                    ret = write(fd, buf + sent, len - sent);
+                    if (ret <= 0) return -1;
+                }
+                sent += ret;
             }
             return 0;
         }
         
-        static void handle_request(int client_fd, char *buffer, size_t len) {
+        static void handle_api(client_t *client, char *buf, size_t len) {
             (void)len;
             char method[16] = {0}, path[256] = {0};
             char response[4096] = {0};
             int status = 200;
             
-            if (sscanf(buffer, "%15s %255s", method, path) != 2) {
-                close(client_fd);
+            if (sscanf(buf, "%15s %255s", method, path) != 2) {
+                if (client->ssl) SSL_free(client->ssl);
+                close(client->fd);
                 return;
             }
             
-            char *body = strstr(buffer, "\r\n\r\n");
+            char *body = strstr(buf, "\r\n\r\n");
             if (body) body += 4;
             
             if (strcmp(path, "/api/play") == 0) {
-                const char *sound = "/usr/share/notification-client/sounds/default.wav";
                 int force = (body && strstr(body, "force_wakeup")) ? 1 : 0;
-                int result = audio_play_async(sound, force);
+                int result = audio_play_async("/usr/share/notification-client/sounds/default.wav", force);
                 snprintf(response, sizeof(response),
-                        "{\"action\":\"play\",\"success\":%s,\"async\":true}",
-                        result == 0 ? "true" : "false");
+                        "{\"action\":\"play\",\"success\":%s,\"async\":true,\"protocol\":\"%s\"}",
+                        result == 0 ? "true" : "false",
+                        client->is_https ? "https" : "http");
                 status = result == 0 ? 200 : 500;
             } else if (strcmp(path, "/api/stop") == 0) {
                 audio_stop_async();
@@ -543,24 +532,23 @@ jobs:
                     audio_set_volume_async(vol);
                     snprintf(response, sizeof(response), "{\"volume\":%d,\"success\":true}", vol);
                 } else {
-                    int vol = audio_get_volume_sync();
-                    snprintf(response, sizeof(response), "{\"volume\":%d}", vol);
+                    snprintf(response, sizeof(response), "{\"volume\":%d}", audio_get_volume_sync());
                 }
             } else if (strcmp(path, "/api/status") == 0) {
-                int device = audio_check_device_sync();
                 snprintf(response, sizeof(response),
-                        "{\"status\":\"running\",\"device_available\":%s,\"volume\":%d}",
-                        device ? "true" : "false", audio_get_volume_sync());
+                        "{\"status\":\"running\",\"device\":%d,\"volume\":%d,\"https\":%d}",
+                        audio_check_device_sync(), audio_get_volume_sync(), client->is_https);
             } else if (strcmp(path, "/api/info") == 0) {
                 snprintf(response, sizeof(response),
-                        "{\"name\":\"Notification Client\",\"version\":\"2.0.0\",\"arch\":\"mips64el\",\"async\":true}");
+                        "{\"name\":\"Notification Client\",\"version\":\"%s\",\"arch\":\"mips64el\",\"protocol\":\"%s\"}",
+                        VERSION, client->is_https ? "https" : "http");
             } else {
                 status = 404;
-                snprintf(response, sizeof(response), "{\"error\":\"Endpoint not found\"}");
+                snprintf(response, sizeof(response), "{\"error\":\"Not found\"}");
             }
             
-            char full_response[4096];
-            snprintf(full_response, sizeof(full_response),
+            char full[8192];
+            snprintf(full, sizeof(full),
                     "HTTP/1.1 %d OK\r\n"
                     "Content-Type: application/json\r\n"
                     "Content-Length: %zu\r\n"
@@ -568,141 +556,192 @@ jobs:
                     "\r\n%s",
                     status, strlen(response), response);
             
-            write_all(client_fd, full_response, strlen(full_response), 5000);
-            close(client_fd);
+            write_all(client->fd, client->ssl, client->is_https, full, strlen(full));
+            if (client->ssl) SSL_free(client->ssl);
+            close(client->fd);
         }
         
         static void* worker_thread(void *arg) {
-            http_server_opt_t *server = (http_server_opt_t*)arg;
+            server_t *server = (server_t*)arg;
             while (server->running) {
-                int fd = dequeue_task();
-                if (fd < 0) continue;
-                
+                client_t client;
+                dequeue_task(&client);
+                if (client.fd < 0) continue;
                 char buffer[BUFFER_SIZE] = {0};
                 size_t len = 0;
-                if (read_all(fd, buffer, &len, sizeof(buffer) - 1, READ_TIMEOUT_MS) == 0) {
-                    handle_request(fd, buffer, len);
+                if (read_all(client.fd, client.ssl, client.is_https, buffer, &len, sizeof(buffer)-1) == 0) {
+                    handle_api(&client, buffer, len);
                 } else {
-                    close(fd);
+                    if (client.ssl) SSL_free(client.ssl);
+                    close(client.fd);
                 }
+                pthread_mutex_lock(&server->conn_mutex);
+                server->current_conn--;
+                pthread_mutex_unlock(&server->conn_mutex);
             }
             return NULL;
         }
         
-        http_server_opt_t* http_server_opt_create(int port, int max_workers, int max_connections) {
-            if (max_workers <= 0) max_workers = 4;
-            if (max_connections <= 0) max_connections = 100;
-            
-            http_server_opt_t *server = calloc(1, sizeof(http_server_opt_t));
-            if (!server) return NULL;
-            
-            server->port = port;
-            server->max_connections = max_connections;
-            server->worker_count = max_workers;
-            server->running = 0;
-            server->current_connections = 0;
-            pthread_mutex_init(&server->conn_mutex, NULL);
-            
-            server->server_fd = socket(AF_INET, SOCK_STREAM | SOCK_NONBLOCK, 0);
-            if (server->server_fd < 0) {
-                free(server);
-                return NULL;
-            }
-            
+        static int create_socket(int port) {
+            int fd = socket(AF_INET, SOCK_STREAM | SOCK_NONBLOCK, 0);
+            if (fd < 0) return -1;
             int opt = 1;
-            setsockopt(server->server_fd, SOL_SOCKET, SO_REUSEADDR, &opt, sizeof(opt));
-            setsockopt(server->server_fd, IPPROTO_TCP, TCP_NODELAY, &opt, sizeof(opt));
-            
+            setsockopt(fd, SOL_SOCKET, SO_REUSEADDR, &opt, sizeof(opt));
+            setsockopt(fd, IPPROTO_TCP, TCP_NODELAY, &opt, sizeof(opt));
             struct sockaddr_in addr;
             memset(&addr, 0, sizeof(addr));
             addr.sin_family = AF_INET;
             addr.sin_addr.s_addr = INADDR_ANY;
             addr.sin_port = htons(port);
+            if (bind(fd, (struct sockaddr*)&addr, sizeof(addr)) < 0) {
+                close(fd);
+                return -1;
+            }
+            if (listen(fd, 100) < 0) {
+                close(fd);
+                return -1;
+            }
+            return fd;
+        }
+        
+        server_t* server_create(int port, int max_workers, int max_conn,
+                                const char *cert, const char *key) {
+            server_t *s = calloc(1, sizeof(server_t));
+            if (!s) return NULL;
+            s->http_port = port;
+            s->https_port = port + 443;
+            s->worker_count = max_workers;
+            s->max_conn = max_conn;
+            pthread_mutex_init(&s->conn_mutex, NULL);
             
-            if (bind(server->server_fd, (struct sockaddr*)&addr, sizeof(addr)) < 0) {
-                close(server->server_fd);
-                free(server);
-                return NULL;
+            if (cert && key && access(cert, R_OK) == 0 && access(key, R_OK) == 0) {
+                s->ssl_ctx = init_ssl(cert, key);
+                if (s->ssl_ctx) {
+                    strncpy(s->cert_file, cert, 255);
+                    strncpy(s->key_file, key, 255);
+                    s->https_fd = create_socket(s->https_port);
+                    if (s->https_fd >= 0) {
+                        syslog(LOG_INFO, "HTTPS on port %d", s->https_port);
+                    }
+                }
             }
             
-            if (listen(server->server_fd, max_connections) < 0) {
-                close(server->server_fd);
-                free(server);
+            s->http_fd = create_socket(s->http_port);
+            if (s->http_fd >= 0) {
+                syslog(LOG_INFO, "HTTP on port %d", s->http_port);
+            }
+            
+            if (s->http_fd < 0 && s->https_fd < 0) {
+                if (s->ssl_ctx) SSL_CTX_free(s->ssl_ctx);
+                free(s);
                 return NULL;
             }
             
             audio_worker_init(2);
-            
-            server->worker_threads = malloc(sizeof(pthread_t) * max_workers);
+            s->workers = malloc(sizeof(pthread_t) * max_workers);
             for (int i = 0; i < max_workers; i++) {
-                pthread_create(&server->worker_threads[i], NULL, worker_thread, server);
+                pthread_create(&s->workers[i], NULL, worker_thread, s);
             }
             
-            syslog(LOG_INFO, "HTTP server created on port %d with %d workers", port, max_workers);
-            return server;
+            syslog(LOG_INFO, "Server created: HTTP=%d, HTTPS=%d", s->http_port, s->https_port);
+            return s;
         }
         
-        void http_server_opt_destroy(http_server_opt_t *server) {
-            if (!server) return;
-            server->running = 0;
-            for (int i = 0; i < server->worker_count; i++) {
-                pthread_join(server->worker_threads[i], NULL);
+        void server_destroy(server_t *s) {
+            if (!s) return;
+            s->running = 0;
+            for (int i = 0; i < s->worker_count; i++) {
+                pthread_join(s->workers[i], NULL);
             }
-            close(server->server_fd);
-            pthread_mutex_destroy(&server->conn_mutex);
-            free(server->worker_threads);
-            free(server);
+            if (s->http_fd >= 0) close(s->http_fd);
+            if (s->https_fd >= 0) close(s->https_fd);
+            if (s->ssl_ctx) SSL_CTX_free(s->ssl_ctx);
+            pthread_mutex_destroy(&s->conn_mutex);
+            free(s->workers);
+            free(s);
             audio_worker_cleanup();
-            syslog(LOG_INFO, "HTTP server destroyed");
+            syslog(LOG_INFO, "Server destroyed");
         }
         
-        void http_server_opt_run(http_server_opt_t *server) {
-            if (!server) return;
-            server->running = 1;
+        void server_run(server_t *s) {
+            if (!s) return;
+            s->running = 1;
             
+            int epfd = epoll_create1(0);
             struct epoll_event ev, events[MAX_EVENTS];
-            int epoll_fd = epoll_create1(0);
-            ev.events = EPOLLIN;
-            ev.data.fd = server->server_fd;
-            epoll_ctl(epoll_fd, EPOLL_CTL_ADD, server->server_fd, &ev);
             
-            syslog(LOG_INFO, "HTTP server running on port %d", server->port);
+            if (s->http_fd >= 0) {
+                ev.events = EPOLLIN;
+                ev.data.fd = s->http_fd;
+                epoll_ctl(epfd, EPOLL_CTL_ADD, s->http_fd, &ev);
+            }
+            if (s->https_fd >= 0) {
+                ev.events = EPOLLIN;
+                ev.data.fd = s->https_fd;
+                epoll_ctl(epfd, EPOLL_CTL_ADD, s->https_fd, &ev);
+            }
             
-            while (server->running) {
-                int nfds = epoll_wait(epoll_fd, events, MAX_EVENTS, 100);
-                for (int i = 0; i < nfds; i++) {
-                    if (events[i].data.fd == server->server_fd) {
-                        struct sockaddr_in client_addr;
-                        socklen_t addr_len = sizeof(client_addr);
-                        int client_fd = accept4(server->server_fd, 
-                                                (struct sockaddr*)&client_addr, 
-                                                &addr_len, SOCK_NONBLOCK);
-                        if (client_fd < 0) continue;
-                        
-                        pthread_mutex_lock(&server->conn_mutex);
-                        if (server->current_connections < server->max_connections) {
-                            server->current_connections++;
-                            enqueue_task(client_fd);
-                        } else {
-                            close(client_fd);
-                        }
-                        pthread_mutex_unlock(&server->conn_mutex);
+            syslog(LOG_INFO, "Server running");
+            
+            while (s->running) {
+                int n = epoll_wait(epfd, events, MAX_EVENTS, 100);
+                for (int i = 0; i < n; i++) {
+                    int fd = events[i].data.fd;
+                    int is_https = (fd == s->https_fd);
+                    
+                    struct sockaddr_in addr;
+                    socklen_t addr_len = sizeof(addr);
+                    int client_fd = accept4(fd, (struct sockaddr*)&addr, &addr_len, SOCK_NONBLOCK);
+                    if (client_fd < 0) continue;
+                    
+                    pthread_mutex_lock(&s->conn_mutex);
+                    if (s->current_conn >= s->max_conn) {
+                        pthread_mutex_unlock(&s->conn_mutex);
+                        close(client_fd);
+                        continue;
                     }
+                    s->current_conn++;
+                    pthread_mutex_unlock(&s->conn_mutex);
+                    
+                    client_t client;
+                    client.fd = client_fd;
+                    client.addr = addr;
+                    client.is_https = is_https;
+                    client.ssl = NULL;
+                    
+                    if (is_https && s->ssl_ctx) {
+                        SSL *ssl = SSL_new(s->ssl_ctx);
+                        if (ssl) {
+                            SSL_set_fd(ssl, client_fd);
+                            if (SSL_accept(ssl) <= 0) {
+                                SSL_free(ssl);
+                                close(client_fd);
+                                pthread_mutex_lock(&s->conn_mutex);
+                                s->current_conn--;
+                                pthread_mutex_unlock(&s->conn_mutex);
+                                continue;
+                            }
+                            client.ssl = ssl;
+                        }
+                    }
+                    
+                    enqueue_task(&client);
                 }
             }
-            close(epoll_fd);
-            syslog(LOG_INFO, "HTTP server stopped");
+            close(epfd);
+            syslog(LOG_INFO, "Server stopped");
         }
         
-        void http_server_opt_stop(http_server_opt_t *server) {
-            if (server) server->running = 0;
+        void server_stop(server_t *s) {
+            if (s) s->running = 0;
         }
-        HTTP_OPT_C_EOF
+        SERVER_EOF
         
         # ============================================
-        # main_optimized.c
+        # main.c
         # ============================================
-        cat > src/main_optimized.c << 'MAIN_OPT_EOF'
+        cat > src/main.c << 'MAIN_EOF'
+        #include "notification_client.h"
         #include <stdio.h>
         #include <stdlib.h>
         #include <string.h>
@@ -711,16 +750,16 @@ jobs:
         #include <syslog.h>
         #include <getopt.h>
         #include <sys/stat.h>
-        #include "http_server_optimized.h"
-        #include "audio_worker.h"
         
-        #define VERSION "2.0.0"
+        #define DEFAULT_PORT 8080
+        #define DEFAULT_CERT "/etc/notification-client/server.crt"
+        #define DEFAULT_KEY "/etc/notification-client/server.key"
         
         static int running = 1;
         
         void signal_handler(int sig) {
             if (sig == SIGINT || sig == SIGTERM) {
-                syslog(LOG_INFO, "Received termination signal, shutting down...");
+                syslog(LOG_INFO, "Shutting down...");
                 running = 0;
             }
         }
@@ -728,7 +767,7 @@ jobs:
         void daemonize(void) {
             pid_t pid = fork();
             if (pid < 0) { perror("fork"); exit(1); }
-            if (pid > 0) { exit(0); }
+            if (pid > 0) exit(0);
             umask(0);
             if (setsid() < 0) { perror("setsid"); exit(1); }
             close(STDIN_FILENO);
@@ -737,68 +776,76 @@ jobs:
             openlog("notification-client", LOG_PID, LOG_DAEMON);
         }
         
-        void print_usage(char *prog) {
+        void usage(char *prog) {
+            printf("Notification Client v%s\n", VERSION);
             printf("Usage: %s [OPTIONS]\n", prog);
-            printf("Options:\n");
-            printf("  -c, --config FILE   Configuration file path\n");
-            printf("  -d, --daemon        Run as daemon\n");
-            printf("  -p, --port PORT     HTTP server port (default: 8080)\n");
-            printf("  -w, --workers N     Number of worker threads (default: 4)\n");
-            printf("  -h, --help          Show this help message\n");
-            printf("  -v, --version       Show version information\n");
+            printf("  -d, --daemon          Run as daemon\n");
+            printf("  -p, --port PORT       HTTP port (default: 8080)\n");
+            printf("  -w, --workers N       Worker threads (default: 4)\n");
+            printf("  --cert FILE           SSL certificate file\n");
+            printf("  --key FILE            SSL private key file\n");
+            printf("  -h, --help            Show help\n");
+            printf("  -v, --version         Show version\n");
+            printf("\nHTTPS port: HTTP port + 443 (e.g., 8443)\n");
         }
         
         int main(int argc, char *argv[]) {
-            int http_port = 8080;
-            int daemon_mode = 0;
-            int num_workers = 4;
-            int max_connections = 100;
+            int port = DEFAULT_PORT;
+            int daemon = 0;
+            int workers = 4;
+            int max_conn = 100;
+            char *cert = DEFAULT_CERT;
+            char *key = DEFAULT_KEY;
             
-            static struct option long_options[] = {
-                {"config", required_argument, 0, 'c'},
+            static struct option long_opts[] = {
                 {"daemon", no_argument, 0, 'd'},
                 {"port", required_argument, 0, 'p'},
                 {"workers", required_argument, 0, 'w'},
+                {"cert", required_argument, 0, 1000},
+                {"key", required_argument, 0, 1001},
                 {"help", no_argument, 0, 'h'},
                 {"version", no_argument, 0, 'v'},
                 {0, 0, 0, 0}
             };
             
             int opt;
-            while ((opt = getopt_long(argc, argv, "c:dp:w:hv", long_options, NULL)) != -1) {
+            while ((opt = getopt_long(argc, argv, "dp:w:hv", long_opts, NULL)) != -1) {
                 switch (opt) {
-                    case 'c': break;
-                    case 'd': daemon_mode = 1; break;
-                    case 'p': http_port = atoi(optarg); break;
-                    case 'w': num_workers = atoi(optarg); break;
-                    case 'h': print_usage(argv[0]); return 0;
+                    case 'd': daemon = 1; break;
+                    case 'p': port = atoi(optarg); break;
+                    case 'w': workers = atoi(optarg); break;
+                    case 1000: cert = optarg; break;
+                    case 1001: key = optarg; break;
+                    case 'h': usage(argv[0]); return 0;
                     case 'v': printf("Notification Client v%s\n", VERSION); return 0;
-                    default: print_usage(argv[0]); return 1;
+                    default: usage(argv[0]); return 1;
                 }
             }
             
-            if (daemon_mode) daemonize();
-            
+            if (daemon) daemonize();
             signal(SIGINT, signal_handler);
             signal(SIGTERM, signal_handler);
             signal(SIGHUP, signal_handler);
             
-            http_server_opt_t *server = http_server_opt_create(http_port, num_workers, max_connections);
-            if (!server) {
-                syslog(LOG_ERR, "Failed to create HTTP server");
+            syslog(LOG_INFO, "Starting Notification Client v%s", VERSION);
+            
+            server_t *s = server_create(port, workers, max_conn,
+                                        access(cert, R_OK) == 0 ? cert : NULL,
+                                        access(key, R_OK) == 0 ? key : NULL);
+            if (!s) {
+                syslog(LOG_ERR, "Server creation failed");
                 return 1;
             }
             
-            syslog(LOG_INFO, "Notification Client v%s started (optimized version)", VERSION);
-            http_server_opt_run(server);
-            http_server_opt_destroy(server);
-            syslog(LOG_INFO, "Notification client stopped");
+            server_run(s);
+            server_destroy(s);
+            syslog(LOG_INFO, "Stopped");
             closelog();
             return 0;
         }
-        MAIN_OPT_EOF
+        MAIN_EOF
         
-        echo "=== 所有源文件创建完成 ==="
+        echo "=== 源文件创建完成 ==="
         ls -la src/
         
     - name: Setup cross-compilation environment
@@ -808,13 +855,10 @@ jobs:
         echo "AR=mips64el-linux-gnuabi64-ar" >> $GITHUB_ENV
         echo "STRIP=mips64el-linux-gnuabi64-strip" >> $GITHUB_ENV
         
-    - name: Clean up and create Makefile
+    - name: Create Makefile
       run: |
-        rm -rf makefile Makefile Makefile.*
-        rm -rf notification-client
-        rm -rf package/
-        rm -f notification-client_*.deb
-        rm -f src/*.o
+        rm -rf makefile Makefile Makefile.* notification-client package/
+        rm -f notification-client_*.deb src/*.o
         
         cat > Makefile << 'MAKEFILE_EOF'
         CC = mips64el-linux-gnuabi64-gcc
@@ -822,11 +866,10 @@ jobs:
         AR = mips64el-linux-gnuabi64-ar
         STRIP = mips64el-linux-gnuabi64-strip
         
-        MARCH = mips64r2
-        CFLAGS = -Wall -O2 -march=$(MARCH) -D_GNU_SOURCE -pthread
-        LDFLAGS = -lpthread -lasound -lpulse -ljson-c
+        CFLAGS = -Wall -O2 -march=mips64r2 -D_GNU_SOURCE -pthread
+        LDFLAGS = -lpthread -ldl -lssl -lcrypto
         
-        SOURCES = src/main_optimized.c src/audio_worker.c src/http_server_optimized.c
+        SOURCES = src/main.c src/audio_worker.c src/server.c
         OBJECTS = $(SOURCES:.c=.o)
         TARGET = notification-client
         
@@ -834,16 +877,13 @@ jobs:
         
         $(TARGET): $(OBJECTS)
         	$(CC) $(CFLAGS) -o $@ $^ $(LDFLAGS)
-        	@echo "Build complete: $@"
         	@file $@
         
         %.o: %.c
         	$(CC) $(CFLAGS) -c $< -o $@
         
         clean:
-        	rm -f $(OBJECTS)
-        	rm -rf $(TARGET)
-        	rm -f notification-client_*.deb
+        	rm -f $(OBJECTS) $(TARGET) notification-client_*.deb
         	rm -rf package/
         MAKEFILE_EOF
         
@@ -856,33 +896,44 @@ jobs:
         make
         file notification-client
         
-    - name: Create DEB package with full embedded dependencies
+    - name: Create DEB package
       run: |
         mkdir -p package/DEBIAN
         mkdir -p package/usr/bin
+        mkdir -p package/usr/lib/notification-client/bin
         mkdir -p package/usr/lib/notification-client
         mkdir -p package/etc/notification-client
         mkdir -p package/usr/share/notification-client/sounds
         mkdir -p package/lib/systemd/system
         mkdir -p package/usr/share/doc/notification-client
         
-        # 复制二进制文件
+        # 二进制
         cp notification-client package/usr/bin/
         ${STRIP} package/usr/bin/notification-client 2>/dev/null || true
         
-        # 复制所有依赖库到DEB包
-        echo "=== 嵌入所有依赖库到DEB包 ==="
-        if [ -d "deps/mips64el/usr/lib/mips64el-linux-gnuabi64" ]; then
-          cp -r deps/mips64el/usr/lib/mips64el-linux-gnuabi64/* package/usr/lib/notification-client/ 2>/dev/null || true
-          echo "Library count: $(ls -1 package/usr/lib/notification-client/*.so* 2>/dev/null | wc -l)"
-          du -sh package/usr/lib/notification-client/
+        # 复制依赖库（如果有）
+        if [ -d "deps/mips64el/usr/lib/notification-client" ] && [ "$(ls -A deps/mips64el/usr/lib/notification-client 2>/dev/null)" ]; then
+          cp -r deps/mips64el/usr/lib/notification-client/* package/usr/lib/notification-client/ 2>/dev/null || true
+          echo "依赖库已复制"
+        else
+          echo "没有依赖库需要复制"
         fi
         
-        # 创建启动脚本，设置LD_LIBRARY_PATH
+        # 创建空的lib目录（运行时使用系统库）
+        chmod 755 package/usr/lib/notification-client/bin 2>/dev/null || true
+        
+        # SSL证书
+        cp certs/server.crt package/etc/notification-client/
+        cp certs/server.key package/etc/notification-client/
+        chmod 600 package/etc/notification-client/server.key 2>/dev/null || true
+        chmod 644 package/etc/notification-client/server.crt 2>/dev/null || true
+        
+        # 启动脚本
         cat > package/usr/bin/notification-client-wrapper << 'WRAPPER_EOF'
         #!/bin/bash
-        export LD_LIBRARY_PATH=/usr/lib/notification-client:$LD_LIBRARY_PATH
-        exec /usr/bin/notification-client "$@"
+        export LD_LIBRARY_PATH=/usr/lib/notification-client:/usr/lib/mips64el-linux-gnuabi64:$LD_LIBRARY_PATH
+        export PATH=/usr/lib/notification-client/bin:$PATH
+        exec /usr/bin/notification-client --cert /etc/notification-client/server.crt --key /etc/notification-client/server.key "$@"
         WRAPPER_EOF
         chmod 755 package/usr/bin/notification-client-wrapper
         
@@ -892,21 +943,25 @@ jobs:
           "default_sound": "/usr/share/notification-client/sounds/default.wav",
           "default_volume": 80,
           "http_port": 8080,
+          "https_port": 8443,
           "audio_device": "default",
           "enable_wakeup": true,
-          "custom_sounds": []
+          "ssl": {
+            "cert": "/etc/notification-client/server.crt",
+            "key": "/etc/notification-client/server.key"
+          }
         }
         EOF
         
-        # 创建默认声音
+        # 默认声音
         if command -v sox > /dev/null; then
           sox -n package/usr/share/notification-client/sounds/default.wav synth 0.5 sine 800 2>/dev/null || true
         fi
         
-        # systemd服务文件 - 使用wrapper设置LD_LIBRARY_PATH
+        # systemd服务
         cat > package/lib/systemd/system/notification-client.service << 'SERVICE_EOF'
         [Unit]
-        Description=Notification Client Service (Full Embedded)
+        Description=Notification Client
         After=network.target sound.target
         Wants=network.target
 
@@ -914,7 +969,8 @@ jobs:
         Type=simple
         User=nobody
         Group=nogroup
-        Environment="LD_LIBRARY_PATH=/usr/lib/notification-client"
+        Environment="LD_LIBRARY_PATH=/usr/lib/notification-client:/usr/lib/mips64el-linux-gnuabi64"
+        Environment="PATH=/usr/lib/notification-client/bin:/usr/bin:/bin"
         ExecStart=/usr/bin/notification-client-wrapper -d -p 8080 -w 4
         Restart=always
         RestartSec=10
@@ -928,27 +984,29 @@ jobs:
         
         # 文档
         cat > package/usr/share/doc/notification-client/README << 'README_EOF'
-        Notification Client - Full Embedded Version
+        Notification Client for Kylin V10 (MIPS64el)
         
-        所有依赖库已包含在 /usr/lib/notification-client/ 目录中。
-        无需联网安装任何额外依赖。
+        支持HTTP和HTTPS双协议。
         
-        使用方法：
-        1. 安装: sudo dpkg -i notification-client_*.deb
-        2. 启动: sudo systemctl start notification-client
-        3. API: curl http://localhost:8080/api/play
+        端口:
+        - HTTP: 8080
+        - HTTPS: 8443
         
-        注意：需要系统已安装 systemd 和基本的音频驱动。
+        使用:
+        sudo systemctl start notification-client
+        curl http://localhost:8080/api/status
+        curl -k https://localhost:8443/api/status
+        
+        浏览器访问: http://IP:8080 或 https://IP:8443
         README_EOF
         
-    - name: Create DEBIAN control files (no external dependencies)
+    - name: Create DEBIAN control
       run: |
-        VERSION="2.0.0"
+        VERSION="3.0.0"
         if [ -n "${{ github.ref_type }}" ] && [ "${{ github.ref_type }}" = "tag" ]; then
           VERSION=${GITHUB_REF#refs/tags/v}
         fi
         
-        # 计算DEB包大小
         PKG_SIZE=$(du -sk package | cut -f1)
         
         cat > package/DEBIAN/control << CONTROL_EOF
@@ -959,53 +1017,40 @@ jobs:
         Architecture: mips64el
         Maintainer: ${GITHUB_ACTOR} <${GITHUB_ACTOR}@users.noreply.github.com>
         Installed-Size: ${PKG_SIZE}
-        Depends: libc6 (>= 2.28), systemd
-        Suggests: alsa-utils, pulseaudio, sox
-        Description: Notification audio playback client with HTTP API
-         Full embedded version - all dependencies included.
+        Depends: libc6 (>= 2.28), systemd, libssl3, libasound2, libpulse0
+        Suggests: sox
+        Description: Notification audio playback client for Kylin V10
+         Full-featured notification client for Kylin V10 (MIPS64el).
          Features:
-          - HTTP REST API for remote triggering
-          - Async audio playback (non-blocking)
-          - Thread pool for concurrent requests
-          - Auto-start at boot
+          - HTTP + HTTPS dual protocol support
+          - Async audio playback with thread pool
+          - Auto-start at boot (systemd)
           - Force wakeup capability
           - Volume control
-          - Custom sound support
-          - Systemd integration
-          - No network required for installation
+          - Self-signed SSL certificate included
         Homepage: https://github.com/${GITHUB_REPOSITORY}
         CONTROL_EOF
         
-        # postinst脚本 - 只做基础配置，不依赖网络
         cat > package/DEBIAN/postinst << 'POSTINST_EOF'
         #!/bin/bash
         set -e
-        
         case "$1" in
             configure)
-                # 创建必要的目录
                 mkdir -p /etc/notification-client
                 mkdir -p /usr/share/notification-client/sounds
-                mkdir -p /usr/lib/notification-client
+                mkdir -p /usr/lib/notification-client/bin
                 
-                # 设置LD_LIBRARY_PATH环境变量
                 if [ -d /usr/lib/notification-client ] && [ "$(ls -A /usr/lib/notification-client 2>/dev/null)" ]; then
-                    cat > /etc/profile.d/notification-client.sh << 'ENV_EOF'
-                    export LD_LIBRARY_PATH=/usr/lib/notification-client:$LD_LIBRARY_PATH
-                    ENV_EOF
-                    chmod 644 /etc/profile.d/notification-client.sh
-                    
-                    # 也添加到ld.so.conf
                     echo "/usr/lib/notification-client" > /etc/ld.so.conf.d/notification-client.conf 2>/dev/null || true
                     ldconfig 2>/dev/null || true
                 fi
                 
-                # 创建默认声音文件（如果sox可用）
-                if [ ! -f /usr/share/notification-client/sounds/default.wav ] && command -v sox > /dev/null 2>&1; then
+                chmod 600 /etc/notification-client/server.key 2>/dev/null || true
+                
+                if [ ! -f /usr/share/notification-client/sounds/default.wav ] && command -v sox >/dev/null 2>&1; then
                     sox -n /usr/share/notification-client/sounds/default.wav synth 0.5 sine 800 2>/dev/null || true
                 fi
                 
-                # 启动服务
                 systemctl daemon-reload 2>/dev/null || true
                 systemctl enable notification-client.service 2>/dev/null || true
                 systemctl start notification-client.service 2>/dev/null || true
@@ -1015,7 +1060,6 @@ jobs:
         POSTINST_EOF
         chmod 755 package/DEBIAN/postinst
         
-        # prerm脚本
         cat > package/DEBIAN/prerm << 'PRERM_EOF'
         #!/bin/bash
         set -e
@@ -1023,7 +1067,6 @@ jobs:
             remove)
                 systemctl stop notification-client.service 2>/dev/null || true
                 systemctl disable notification-client.service 2>/dev/null || true
-                rm -f /etc/profile.d/notification-client.sh 2>/dev/null || true
                 rm -f /etc/ld.so.conf.d/notification-client.conf 2>/dev/null || true
                 ldconfig 2>/dev/null || true
                 ;;
@@ -1032,24 +1075,24 @@ jobs:
         PRERM_EOF
         chmod 755 package/DEBIAN/prerm
         
-    - name: Build DEB package
+    - name: Build DEB
       run: |
-        VERSION="2.0.0"
+        VERSION="3.0.0"
         if [ -n "${{ github.ref_type }}" ] && [ "${{ github.ref_type }}" = "tag" ]; then
           VERSION=${GITHUB_REF#refs/tags/v}
         fi
         fakeroot dpkg-deb --build package notification-client_${VERSION}_mips64el.deb
         file notification-client_${VERSION}_mips64el.deb
         dpkg-deb --info notification-client_${VERSION}_mips64el.deb
-        echo "=== DEB包内容（前30行） ==="
-        dpkg-deb --contents notification-client_${VERSION}_mips64el.deb | head -30
         echo "=== DEB包大小 ==="
         ls -lh notification-client_${VERSION}_mips64el.deb
+        echo "=== DEB包内容 ==="
+        dpkg-deb --contents notification-client_${VERSION}_mips64el.deb | head -30
         
-    - name: Upload DEB artifact
+    - name: Upload artifact
       uses: actions/upload-artifact@v4
       with:
-        name: notification-client-mips64el-full-embedded
+        name: notification-client-kylin-mips64el
         path: notification-client_*.deb
         if-no-files-found: error
         
@@ -1059,7 +1102,5 @@ jobs:
       with:
         files: notification-client_*.deb
         generate_release_notes: true
-        draft: false
-        prerelease: false
       env:
         GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
