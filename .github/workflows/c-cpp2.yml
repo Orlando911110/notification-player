@@ -1,0 +1,5 @@
+# 创建标签
+git tag -a v2.0.0 -m "Release v2.0.0 with async optimizations"
+
+# 推送标签到GitHub
+git push origin v2.0.0
