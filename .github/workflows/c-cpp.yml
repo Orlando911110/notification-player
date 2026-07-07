@@ -19,25 +19,17 @@ jobs:
       
     - name: Configure Kylin software sources
       run: |
-        # 备份原有源
         sudo cp /etc/apt/sources.list /etc/apt/sources.list.bak
-        
-        # 配置麒麟V10 SP1的源
         sudo tee /etc/apt/sources.list << 'EOF'
         # 麒麟V10 SP1 软件源
         deb https://update.cs2c.com.cn/NS/V10/V10SP1.1/os/adv/lic/updates/mips64el/ ./
         deb https://update.cs2c.com.cn/NS/V10/V10SP1.1/os/adv/lic/updates/mips64el/ updates/
         EOF
-        
-        # 添加mips64el架构支持
         sudo dpkg --add-architecture mips64el
-        
-        # 更新源列表
         sudo apt-get update || true
         
     - name: Install cross-compilation toolchain
       run: |
-        # 安装交叉编译工具链
         sudo apt-get install -y \
           gcc-mips64el-linux-gnuabi64 \
           g++-mips64el-linux-gnuabi64 \
@@ -54,13 +46,8 @@ jobs:
           libpulse-dev \
           libjson-c-dev || true
         
-        # 验证工具链
         echo "=== 验证交叉编译工具链 ==="
         mips64el-linux-gnuabi64-gcc --version || echo "gcc not found"
-        
-        # 查看支持的march选项
-        echo "=== 查看支持的march选项 ==="
-        mips64el-linux-gnuabi64-gcc -march=help 2>&1 | head -20 || true
         
     - name: Create all source files
       run: |
@@ -199,7 +186,7 @@ jobs:
                                 snprintf(cmd, sizeof(cmd), 
                                         "amixer set Master %d%% 2>/dev/null || pactl set-sink-volume @DEFAULT_SINK@ %d%% 2>/dev/null",
                                         job->volume, job->volume);
-                                system(cmd);
+                                (void)system(cmd);
                             }
                             job->result = 0;
                             break;
@@ -308,8 +295,8 @@ jobs:
         }
         
         void audio_stop_async(void) {
-            system("pkill -f aplay 2>/dev/null");
-            system("pkill -f paplay 2>/dev/null");
+            (void)system("pkill -f aplay 2>/dev/null");
+            (void)system("pkill -f paplay 2>/dev/null");
         }
         
         void audio_set_volume_async(int volume) {
@@ -341,7 +328,7 @@ jobs:
         AUDIO_WORKER_C_EOF
         
         # ============================================
-        # http_server_optimized.h
+        # http_server_optimized.h - 修复结构体定义
         # ============================================
         cat > src/http_server_optimized.h << 'HTTP_OPT_H_EOF'
         #ifndef HTTP_SERVER_OPTIMIZED_H
@@ -349,8 +336,10 @@ jobs:
         
         #include <stdint.h>
         
+        // 前向声明
         typedef struct http_server_opt_s http_server_opt_t;
         
+        // 函数声明
         http_server_opt_t* http_server_opt_create(int port, int max_workers, int max_connections);
         void http_server_opt_destroy(http_server_opt_t *server);
         void http_server_opt_run(http_server_opt_t *server);
@@ -360,7 +349,7 @@ jobs:
         HTTP_OPT_H_EOF
         
         # ============================================
-        # http_server_optimized.c
+        # http_server_optimized.c - 修复结构体定义
         # ============================================
         cat > src/http_server_optimized.c << 'HTTP_OPT_C_EOF'
         #include "http_server_optimized.h"
@@ -386,15 +375,8 @@ jobs:
         #define BUFFER_SIZE 8192
         #define READ_TIMEOUT_MS 5000
         
-        typedef struct {
-            int fd;
-            char read_buffer[BUFFER_SIZE];
-            size_t read_len;
-            struct sockaddr_in addr;
-            time_t last_active;
-        } client_connection_t;
-        
-        typedef struct {
+        // 定义结构体 - 与头文件匹配
+        struct http_server_opt_s {
             int epoll_fd;
             int server_fd;
             int port;
@@ -404,7 +386,7 @@ jobs:
             pthread_t *worker_threads;
             int worker_count;
             pthread_mutex_t conn_mutex;
-        } http_server_opt_t;
+        };
         
         typedef struct task_s {
             int client_fd;
@@ -672,6 +654,7 @@ jobs:
         #include <signal.h>
         #include <syslog.h>
         #include <getopt.h>
+        #include <sys/stat.h>
         #include "http_server_optimized.h"
         #include "audio_worker.h"
         
@@ -769,29 +752,20 @@ jobs:
         echo "AR=mips64el-linux-gnuabi64-ar" >> $GITHUB_ENV
         echo "STRIP=mips64el-linux-gnuabi64-strip" >> $GITHUB_ENV
         
-        echo "=== 环境变量 ==="
-        env | grep -E "(CC|CXX|AR|STRIP)"
-        
     - name: Clean up and create Makefile
       run: |
-        # 删除可能存在的冲突文件或目录
-        rm -rf makefile
-        rm -rf Makefile
-        rm -f Makefile.*
+        rm -rf makefile Makefile Makefile.*
         rm -rf notification-client
         rm -rf package/
         rm -f notification-client_*.deb
         rm -f src/*.o
         
-        # 创建 Makefile - 使用正确的MIPS架构参数
         cat > Makefile << 'MAKEFILE_EOF'
         CC = mips64el-linux-gnuabi64-gcc
         CXX = mips64el-linux-gnuabi64-g++
         AR = mips64el-linux-gnuabi64-ar
         STRIP = mips64el-linux-gnuabi64-strip
         
-        # 使用 mips64r2 作为通用MIPS64架构
-        # 如果需要特定CPU优化，可以改为: 5kc, 20kc, 24kc, 34kc, 74kc, loongson3a 等
         MARCH = mips64r2
         CFLAGS = -Wall -O2 -march=$(MARCH) -D_GNU_SOURCE -pthread
         LDFLAGS = -lpthread
@@ -833,7 +807,6 @@ jobs:
         mkdir -p package/etc/notification-client
         mkdir -p package/usr/share/notification-client/sounds
         mkdir -p package/lib/systemd/system
-        mkdir -p package/usr/share/doc/notification-client
         
         cp notification-client package/usr/bin/
         ${STRIP} package/usr/bin/notification-client 2>/dev/null || true
@@ -892,15 +865,6 @@ jobs:
         Suggests: sox, alsa-utils, pulseaudio
         Description: Notification audio playback client with HTTP API
          Optimized version with async playback and thread pool.
-         Features include:
-          - HTTP REST API for remote triggering
-          - Async audio playback (non-blocking)
-          - Thread pool for concurrent requests
-          - Auto-start at boot
-          - Force wakeup capability
-          - Volume control
-          - Custom sound support
-          - Systemd integration
         Homepage: https://github.com/${GITHUB_REPOSITORY}
         CONTROL_EOF
         
@@ -945,7 +909,6 @@ jobs:
         fakeroot dpkg-deb --build package notification-client_${VERSION}_mips64el.deb
         file notification-client_${VERSION}_mips64el.deb
         dpkg-deb --info notification-client_${VERSION}_mips64el.deb
-        dpkg-deb --contents notification-client_${VERSION}_mips64el.deb
         
     - name: Upload DEB artifact
       uses: actions/upload-artifact@v4
