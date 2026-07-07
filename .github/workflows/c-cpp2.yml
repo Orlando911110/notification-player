@@ -19,7 +19,6 @@ jobs:
       
     - name: Install cross compiler and dependencies
       run: |
-        # 安装交叉编译工具链（不依赖麒麟源）
         sudo apt-get update
         sudo apt-get install -y \
           gcc-mips64el-linux-gnuabi64 \
@@ -33,36 +32,11 @@ jobs:
           sox \
           libsox-dev \
           pkg-config \
-          wget \
-          curl \
           openssl \
           libssl-dev || true
         
-        # 验证编译器
         echo "=== 验证交叉编译工具链 ==="
         mips64el-linux-gnuabi64-gcc --version || echo "gcc not found"
-        
-        # 创建依赖目录
-        mkdir -p deps/mips64el/usr/lib/notification-client
-        mkdir -p deps/mips64el/usr/lib/notification-client/bin
-        
-        # 尝试从系统复制库文件（如果有）
-        echo "=== 尝试复制系统库文件 ==="
-        if [ -d "/usr/lib/mips64el-linux-gnuabi64" ]; then
-          find /usr/lib/mips64el-linux-gnuabi64 -name "*.so*" -type f 2>/dev/null | while read lib; do
-            cp -v "$lib" deps/mips64el/usr/lib/notification-client/ 2>/dev/null || true
-          done
-        fi
-        
-        # 统计
-        echo "=== 库文件统计 ==="
-        if [ -d "deps/mips64el/usr/lib/notification-client" ]; then
-          echo "库文件数量: $(ls -1 deps/mips64el/usr/lib/notification-client/*.so* 2>/dev/null | wc -l)"
-          du -sh deps/mips64el 2>/dev/null || echo "目录为空"
-        else
-          echo "依赖目录不存在，将使用空目录"
-          mkdir -p deps/mips64el/usr/lib/notification-client
-        fi
         
     - name: Generate SSL certificate
       run: |
@@ -90,6 +64,7 @@ jobs:
         
         #include <stdint.h>
         #include <pthread.h>
+        #include <openssl/ssl.h>
         
         #define VERSION "3.0.0"
         
@@ -345,7 +320,7 @@ jobs:
         AUDIO_EOF
         
         # ============================================
-        # server.c
+        # server.c - 修复：添加所有必要的头文件
         # ============================================
         cat > src/server.c << 'SERVER_EOF'
         #include "notification_client.h"
@@ -355,6 +330,7 @@ jobs:
         #include <unistd.h>
         #include <sys/socket.h>
         #include <sys/epoll.h>
+        #include <sys/types.h>
         #include <netinet/in.h>
         #include <netinet/tcp.h>
         #include <arpa/inet.h>
@@ -363,8 +339,11 @@ jobs:
         #include <errno.h>
         #include <fcntl.h>
         #include <poll.h>
+        #include <signal.h>
+        #include <time.h>
         #include <openssl/ssl.h>
         #include <openssl/err.h>
+        #include <openssl/crypto.h>
         
         #define MAX_EVENTS 64
         #define BUFFER_SIZE 8192
@@ -407,19 +386,25 @@ jobs:
             OpenSSL_add_all_algorithms();
             SSL_load_error_strings();
             SSL_CTX *ctx = SSL_CTX_new(TLS_server_method());
-            if (!ctx) { syslog(LOG_ERR, "SSL_CTX_new failed"); return NULL; }
+            if (!ctx) { 
+                syslog(LOG_ERR, "SSL_CTX_new failed"); 
+                return NULL; 
+            }
             SSL_CTX_set_min_proto_version(ctx, TLS1_2_VERSION);
             if (SSL_CTX_use_certificate_file(ctx, cert, SSL_FILETYPE_PEM) <= 0) {
                 syslog(LOG_ERR, "Certificate load failed: %s", cert);
-                SSL_CTX_free(ctx); return NULL;
+                SSL_CTX_free(ctx); 
+                return NULL;
             }
             if (SSL_CTX_use_PrivateKey_file(ctx, key, SSL_FILETYPE_PEM) <= 0) {
                 syslog(LOG_ERR, "Private key load failed: %s", key);
-                SSL_CTX_free(ctx); return NULL;
+                SSL_CTX_free(ctx); 
+                return NULL;
             }
             if (!SSL_CTX_check_private_key(ctx)) {
                 syslog(LOG_ERR, "Key/cert mismatch");
-                SSL_CTX_free(ctx); return NULL;
+                SSL_CTX_free(ctx); 
+                return NULL;
             }
             syslog(LOG_INFO, "SSL initialized");
             return ctx;
@@ -907,20 +892,8 @@ jobs:
         mkdir -p package/lib/systemd/system
         mkdir -p package/usr/share/doc/notification-client
         
-        # 二进制
         cp notification-client package/usr/bin/
         ${STRIP} package/usr/bin/notification-client 2>/dev/null || true
-        
-        # 复制依赖库（如果有）
-        if [ -d "deps/mips64el/usr/lib/notification-client" ] && [ "$(ls -A deps/mips64el/usr/lib/notification-client 2>/dev/null)" ]; then
-          cp -r deps/mips64el/usr/lib/notification-client/* package/usr/lib/notification-client/ 2>/dev/null || true
-          echo "依赖库已复制"
-        else
-          echo "没有依赖库需要复制"
-        fi
-        
-        # 创建空的lib目录（运行时使用系统库）
-        chmod 755 package/usr/lib/notification-client/bin 2>/dev/null || true
         
         # SSL证书
         cp certs/server.crt package/etc/notification-client/
