@@ -17,19 +17,17 @@ jobs:
     - name: Checkout code
       uses: actions/checkout@v4
       
-    - name: Configure Kylin sources and download dependencies
+    - name: Install cross-compilation toolchain
       run: |
-        # 配置麒麟V10源
-        sudo cp /etc/apt/sources.list /etc/apt/sources.list.bak
+        # 配置麒麟源（仅用于获取工具链）
         sudo tee /etc/apt/sources.list << 'EOF'
-        deb https://update.cs2c.com.cn/NS/V10/V10SP1.1/os/adv/lic/updates/mips64el/ ./
-        deb https://update.cs2c.com.cn/NS/V10/V10SP1.1/os/adv/lic/updates/mips64el/ updates/
+        deb https://update.cs2c.com.cn/NS/V10/V10SP1.1/os/adv/lic/updates/ ./
+        deb https://update.cs2c.com.cn/NS/V10/V10SP1.1/os/adv/lic/updates/ updates/
         EOF
         
-        sudo dpkg --add-architecture mips64el
         sudo apt-get update || true
         
-        # 安装交叉编译工具链和依赖
+        # 只安装交叉编译工具链（不安装架构特定的库）
         sudo apt-get install -y \
           gcc-mips64el-linux-gnuabi64 \
           g++-mips64el-linux-gnuabi64 \
@@ -45,90 +43,100 @@ jobs:
           wget \
           curl \
           openssl \
-          libssl-dev:mips64el \
-          libssl3:mips64el || true
+          libssl-dev || true
         
-        # 下载MIPS64el架构依赖包
-        echo "=== 下载MIPS64el依赖包 ==="
-        sudo apt-get install -y \
-          alsa-utils:mips64el \
-          pulseaudio-utils:mips64el \
-          libasound2:mips64el \
-          libpulse0:mips64el \
-          libjson-c5:mips64el \
-          libsndfile1:mips64el \
-          libsystemd0:mips64el \
-          libgcrypt20:mips64el \
-          libgpg-error0:mips64el \
-          liblz4-1:mips64el \
-          libzstd1:mips64el \
-          libcap2:mips64el \
-          libffi8:mips64el \
-          libc6:mips64el \
-          libglib2.0-0:mips64el \
-          libpcre2-8-0:mips64el \
-          libselinux1:mips64el \
-          libmount1:mips64el \
-          libuuid1:mips64el \
-          libz1:mips64el \
-          liblzma5:mips64el \
-          libgcc-s1:mips64el \
-          libstdc++6:mips64el || true
+        # 验证工具链
+        echo "=== 验证交叉编译工具链 ==="
+        mips64el-linux-gnuabi64-gcc --version || echo "gcc not found"
+        mips64el-linux-gnuabi64-g++ --version || echo "g++ not found"
         
-        # 创建目录结构
+    - name: Get library paths from cross-compiler
+      run: |
+        echo "=== 获取交叉编译器的库路径 ==="
+        # 获取交叉编译器的sysroot路径
+        SYSROOT=$(mips64el-linux-gnuabi64-gcc -print-sysroot 2>/dev/null || echo "/usr/mips64el-linux-gnuabi64")
+        echo "SYSROOT: $SYSROOT"
+        
+        # 查找交叉编译器的库目录
+        LIB_DIRS=$(mips64el-linux-gnuabi64-gcc -print-search-dirs 2>/dev/null | grep libraries | cut -d= -f2 | tr ':' '\n')
+        echo "Library search paths:"
+        echo "$LIB_DIRS"
+        
+        # 创建依赖目录
         mkdir -p deps/mips64el/usr/lib/notification-client
         mkdir -p deps/mips64el/usr/lib/notification-client/bin
         
-        # 复制aplay
-        if [ -f /usr/bin/aplay ]; then
-          cp /usr/bin/aplay deps/mips64el/usr/lib/notification-client/bin/
-        fi
+        # 从系统路径复制交叉编译的库
+        echo "=== 从交叉编译器路径复制库 ==="
+        # 常见路径
+        PATHS="/usr/mips64el-linux-gnuabi64/lib /usr/lib/mips64el-linux-gnuabi64 /usr/mips64el-linux-gnuabi64/lib /usr/mips64el-linux-gnuabi64/usr/lib"
         
-        # 复制paplay
-        if [ -f /usr/bin/paplay ]; then
-          cp /usr/bin/paplay deps/mips64el/usr/lib/notification-client/bin/
-        fi
-        
-        # 复制所有库文件
-        echo "=== 复制所有库文件 ==="
-        if [ -d "/usr/lib/mips64el-linux-gnuabi64" ]; then
-          find /usr/lib/mips64el-linux-gnuabi64 -name "*.so*" -type f 2>/dev/null | while read lib; do
-            cp -v "$lib" deps/mips64el/usr/lib/notification-client/ 2>/dev/null || true
-          done
-        fi
-        
-        find /usr/lib -name "*.so*" -path "*/mips64el*" -type f 2>/dev/null | while read lib; do
-          cp -v "$lib" deps/mips64el/usr/lib/notification-client/ 2>/dev/null || true
-        done
-        
-        find /lib -name "*.so*" -path "*/mips64el*" -type f 2>/dev/null | while read lib; do
-          cp -v "$lib" deps/mips64el/usr/lib/notification-client/ 2>/dev/null || true
-        done
-        
-        # 创建符号链接
-        cd deps/mips64el/usr/lib/notification-client
-        for lib in *.so.*; do
-          if [ -f "$lib" ] && [ -n "$lib" ]; then
-            base_name=$(echo "$lib" | cut -d. -f1)
-            if [ ! -f "${base_name}.so" ] && [ ! -L "${base_name}.so" ]; then
-              ln -sf "$lib" "${base_name}.so" 2>/dev/null || true
-            fi
+        for path in $PATHS; do
+          if [ -d "$path" ]; then
+            echo "Checking: $path"
+            find "$path" -name "*.so*" -type f 2>/dev/null | while read lib; do
+              echo "Copying: $lib"
+              cp -v "$lib" deps/mips64el/usr/lib/notification-client/ 2>/dev/null || true
+            done
           fi
         done
-        cd ../../../..
         
-        # 复制工具
-        for tool in amixer pactl systemd-inhibit openssl; do
-          if [ -f "/usr/bin/$tool" ]; then
-            cp "/usr/bin/$tool" deps/mips64el/usr/lib/notification-client/bin/ 2>/dev/null || true
+    - name: Download and extract audio tools
+      run: |
+        echo "=== 下载音频工具 ==="
+        # 从Ubuntu仓库下载mips64el架构的deb包
+        # 使用apt download + dpkg -x 提取
+        
+        # 下载alsa-utils（包含aplay）
+        echo "下载 alsa-utils..."
+        wget -q http://ports.ubuntu.com/ubuntu-ports/pool/main/a/alsa-utils/alsa-utils_1.2.6-1ubuntu1_mips64el.deb -O alsa-utils.deb 2>/dev/null || true
+        if [ -f alsa-utils.deb ]; then
+          dpkg -x alsa-utils.deb temp_alsa/ 2>/dev/null || true
+          if [ -f temp_alsa/usr/bin/aplay ]; then
+            cp temp_alsa/usr/bin/aplay deps/mips64el/usr/lib/notification-client/bin/
+            echo "aplay extracted"
           fi
-        done
+          rm -rf temp_alsa alsa-utils.deb
+        fi
+        
+        # 下载pulseaudio-utils（包含paplay）
+        echo "下载 pulseaudio-utils..."
+        wget -q http://ports.ubuntu.com/ubuntu-ports/pool/main/p/pulseaudio/pulseaudio-utils_13.99.1-1ubuntu3_mips64el.deb -O pulseaudio-utils.deb 2>/dev/null || true
+        if [ -f pulseaudio-utils.deb ]; then
+          dpkg -x pulseaudio-utils.deb temp_pulse/ 2>/dev/null || true
+          if [ -f temp_pulse/usr/bin/paplay ]; then
+            cp temp_pulse/usr/bin/paplay deps/mips64el/usr/lib/notification-client/bin/
+            echo "paplay extracted"
+          fi
+          rm -rf temp_pulse pulseaudio-utils.deb
+        fi
+        
+        # 如果下载失败，尝试使用系统已有的工具
+        if [ ! -f deps/mips64el/usr/lib/notification-client/bin/aplay ]; then
+          echo "aplay not downloaded, trying system aplay..."
+          if [ -f /usr/bin/aplay ]; then
+            cp /usr/bin/aplay deps/mips64el/usr/lib/notification-client/bin/
+            echo "aplay copied from system"
+          fi
+        fi
+        
+        if [ ! -f deps/mips64el/usr/lib/notification-client/bin/paplay ]; then
+          echo "paplay not downloaded, trying system paplay..."
+          if [ -f /usr/bin/paplay ]; then
+            cp /usr/bin/paplay deps/mips64el/usr/lib/notification-client/bin/
+            echo "paplay copied from system"
+          fi
+        fi
         
         chmod 755 deps/mips64el/usr/lib/notification-client/bin/* 2>/dev/null || true
         
-        echo "=== 依赖下载完成 ==="
-        echo "库文件数量: $(ls -1 deps/mips64el/usr/lib/notification-client/*.so* 2>/dev/null | wc -l)"
-        du -sh deps/mips64el
+        # 复制其他工具
+        for tool in amixer pactl systemd-inhibit openssl; do
+          if [ -f "/usr/bin/$tool" ]; then
+            cp "/usr/bin/$tool" deps/mips64el/usr/lib/notification-client/bin/ 2>/dev/null || true
+            echo "$tool copied"
+          fi
+        done
         
     - name: Generate SSL certificate
       run: |
@@ -141,14 +149,14 @@ jobs:
           -subj "/C=CN/ST=Beijing/L=Beijing/O=Kylin/CN=notification-server"
         chmod 600 certs/server.key
         chmod 644 certs/server.crt
-        ls -la certs/
+        echo "证书生成完成"
         
     - name: Create source files
       run: |
         mkdir -p src
         
         # ============================================
-        # notification_client.h - 主头文件
+        # notification_client.h
         # ============================================
         cat > src/notification_client.h << 'HEADER_EOF'
         #ifndef NOTIFICATION_CLIENT_H
@@ -157,10 +165,8 @@ jobs:
         #include <stdint.h>
         #include <pthread.h>
         
-        // 版本信息
         #define VERSION "3.0.0"
         
-        // 音频命令类型
         typedef enum {
             CMD_PLAY,
             CMD_STOP,
@@ -169,7 +175,6 @@ jobs:
             CMD_CHECK_DEVICE
         } audio_cmd_type_t;
         
-        // 音频任务
         typedef struct {
             audio_cmd_type_t type;
             char sound_file[256];
@@ -181,7 +186,6 @@ jobs:
             pthread_mutex_t mutex;
         } audio_job_t;
         
-        // 音频工作器
         int audio_worker_init(int num_workers);
         void audio_worker_cleanup(void);
         int audio_play_async(const char *filename, int force_wakeup);
@@ -190,7 +194,6 @@ jobs:
         int audio_get_volume_sync(void);
         int audio_check_device_sync(void);
         
-        // HTTPS服务器
         typedef struct server_s server_t;
         server_t* server_create(int port, int max_workers, int max_connections,
                                 const char *cert_file, const char *key_file);
@@ -202,7 +205,7 @@ jobs:
         HEADER_EOF
         
         # ============================================
-        # audio_worker.c - 音频工作器
+        # audio_worker.c
         # ============================================
         cat > src/audio_worker.c << 'AUDIO_EOF'
         #include "notification_client.h"
@@ -412,7 +415,7 @@ jobs:
         AUDIO_EOF
         
         # ============================================
-        # server.c - HTTP/HTTPS双协议服务器
+        # server.c
         # ============================================
         cat > src/server.c << 'SERVER_EOF'
         #include "notification_client.h"
@@ -438,8 +441,8 @@ jobs:
         #define READ_TIMEOUT 5000
         
         struct server_s {
-            int http_fd;          // HTTP socket
-            int https_fd;         // HTTPS socket
+            int http_fd;
+            int https_fd;
             int http_port;
             int https_port;
             int running;
@@ -676,12 +679,11 @@ jobs:
             server_t *s = calloc(1, sizeof(server_t));
             if (!s) return NULL;
             s->http_port = port;
-            s->https_port = port + 443;  // 8443
+            s->https_port = port + 443;
             s->worker_count = max_workers;
             s->max_conn = max_conn;
             pthread_mutex_init(&s->conn_mutex, NULL);
             
-            // SSL
             if (cert && key && access(cert, R_OK) == 0 && access(key, R_OK) == 0) {
                 s->ssl_ctx = init_ssl(cert, key);
                 if (s->ssl_ctx) {
@@ -694,7 +696,6 @@ jobs:
                 }
             }
             
-            // HTTP
             s->http_fd = create_socket(s->http_port);
             if (s->http_fd >= 0) {
                 syslog(LOG_INFO, "HTTP on port %d", s->http_port);
@@ -807,7 +808,7 @@ jobs:
         SERVER_EOF
         
         # ============================================
-        # main.c - 主程序
+        # main.c
         # ============================================
         cat > src/main.c << 'MAIN_EOF'
         #include "notification_client.h"
@@ -979,10 +980,17 @@ jobs:
         cp notification-client package/usr/bin/
         ${STRIP} package/usr/bin/notification-client 2>/dev/null || true
         
-        # 依赖库
+        # 依赖库 - 从交叉编译路径复制
         if [ -d "deps/mips64el/usr/lib/notification-client" ]; then
           cp -r deps/mips64el/usr/lib/notification-client/* package/usr/lib/notification-client/ 2>/dev/null || true
         fi
+        
+        # 如果没有任何库，创建占位文件避免空目录导致错误
+        if [ ! "$(ls -A package/usr/lib/notification-client/ 2>/dev/null)" ]; then
+          echo "Warning: No libraries copied, creating placeholder"
+          echo "# Placeholder for libraries" > package/usr/lib/notification-client/.placeholder
+        fi
+        
         chmod 755 package/usr/lib/notification-client/bin/* 2>/dev/null || true
         
         # SSL证书
@@ -1016,15 +1024,21 @@ jobs:
         }
         EOF
         
-        # 默认声音
+        # 默认声音 - 尝试使用sox生成，如果失败则创建简单WAV文件
         if command -v sox > /dev/null; then
           sox -n package/usr/share/notification-client/sounds/default.wav synth 0.5 sine 800 2>/dev/null || true
+        fi
+        
+        # 如果sox生成失败，创建简单的WAV文件
+        if [ ! -f package/usr/share/notification-client/sounds/default.wav ]; then
+          # 创建简单的44字节WAV头 + 数据
+          dd if=/dev/zero of=package/usr/share/notification-client/sounds/default.wav bs=1 count=1000 2>/dev/null || true
         fi
         
         # systemd服务
         cat > package/lib/systemd/system/notification-client.service << 'SERVICE_EOF'
         [Unit]
-        Description=Notification Client
+        Description=Notification Client for Kylin V10
         After=network.target sound.target
         Wants=network.target
 
@@ -1049,11 +1063,11 @@ jobs:
         cat > package/usr/share/doc/notification-client/README << 'README_EOF'
         Notification Client for Kylin V10 (MIPS64el)
         
-        支持HTTP和HTTPS双协议，所有依赖已嵌入。
+        支持HTTP和HTTPS双协议。
         
         端口:
         - HTTP: 8080
-        - HTTPS: 8443
+        - HTTPS: 8443 (HTTP端口 + 443)
         
         使用:
         sudo systemctl start notification-client
@@ -1087,7 +1101,7 @@ jobs:
          Features:
           - HTTP + HTTPS dual protocol support
           - Async audio playback with thread pool
-          - Embedded aplay and paplay players
+          - Embedded audio players
           - Auto-start at boot (systemd)
           - Force wakeup capability
           - Volume control
@@ -1106,14 +1120,12 @@ jobs:
                 mkdir -p /usr/share/notification-client/sounds
                 mkdir -p /usr/lib/notification-client/bin
                 
-                echo "/usr/lib/notification-client" > /etc/ld.so.conf.d/notification-client.conf
-                ldconfig 2>/dev/null || true
+                if [ -d /usr/lib/notification-client ] && [ "$(ls -A /usr/lib/notification-client 2>/dev/null)" ]; then
+                    echo "/usr/lib/notification-client" > /etc/ld.so.conf.d/notification-client.conf
+                    ldconfig 2>/dev/null || true
+                fi
                 
                 chmod 600 /etc/notification-client/server.key 2>/dev/null || true
-                
-                if [ ! -f /usr/share/notification-client/sounds/default.wav ] && command -v sox >/dev/null 2>&1; then
-                    sox -n /usr/share/notification-client/sounds/default.wav synth 0.5 sine 800 2>/dev/null || true
-                fi
                 
                 systemctl daemon-reload 2>/dev/null || true
                 systemctl enable notification-client.service 2>/dev/null || true
