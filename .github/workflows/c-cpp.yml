@@ -58,6 +58,10 @@ jobs:
         echo "=== 验证交叉编译工具链 ==="
         mips64el-linux-gnuabi64-gcc --version || echo "gcc not found"
         
+        # 查看支持的march选项
+        echo "=== 查看支持的march选项 ==="
+        mips64el-linux-gnuabi64-gcc -march=help 2>&1 | head -20 || true
+        
     - name: Create all source files
       run: |
         mkdir -p src
@@ -779,14 +783,17 @@ jobs:
         rm -f notification-client_*.deb
         rm -f src/*.o
         
-        # 创建 Makefile
+        # 创建 Makefile - 使用正确的MIPS架构参数
         cat > Makefile << 'MAKEFILE_EOF'
         CC = mips64el-linux-gnuabi64-gcc
         CXX = mips64el-linux-gnuabi64-g++
         AR = mips64el-linux-gnuabi64-ar
         STRIP = mips64el-linux-gnuabi64-strip
         
-        CFLAGS = -Wall -O2 -march=mips64el -mtune=mips64el -D_GNU_SOURCE -pthread
+        # 使用 mips64r2 作为通用MIPS64架构
+        # 如果需要特定CPU优化，可以改为: 5kc, 20kc, 24kc, 34kc, 74kc, loongson3a 等
+        MARCH = mips64r2
+        CFLAGS = -Wall -O2 -march=$(MARCH) -D_GNU_SOURCE -pthread
         LDFLAGS = -lpthread
         
         SOURCES = src/main_optimized.c src/audio_worker.c src/http_server_optimized.c
@@ -905,7 +912,8 @@ jobs:
                 mkdir -p /etc/notification-client
                 mkdir -p /usr/share/notification-client/sounds
                 if [ ! -f /usr/share/notification-client/sounds/default.wav ] && command -v sox > /dev/null; then
-                    sox -n /usr/share/notification-client/sounds/default.wav synth 0.5 sine 800 2>/dev/null || true                fi
+                    sox -n /usr/share/notification-client/sounds/default.wav synth 0.5 sine 800 2>/dev/null || true
+                fi
                 systemctl daemon-reload 2>/dev/null || true
                 systemctl enable notification-client.service 2>/dev/null || true
                 systemctl start notification-client.service 2>/dev/null || true
