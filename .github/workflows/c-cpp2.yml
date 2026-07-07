@@ -1,4 +1,4 @@
-name: Build MIPS64el Notification Client for Kylin V10
+name: Build MIPS64el Notification Client for Kylin V10 (Full Embedded)
 
 on:
   push:
@@ -17,7 +17,7 @@ jobs:
     - name: Checkout code
       uses: actions/checkout@v4
       
-    - name: Install cross compiler and dependencies
+    - name: Install cross compiler and tools
       run: |
         sudo apt-get update
         sudo apt-get install -y \
@@ -33,10 +33,94 @@ jobs:
           libsox-dev \
           pkg-config \
           openssl \
-          libssl-dev || true
+          libssl-dev
         
         echo "=== 验证交叉编译工具链 ==="
-        mips64el-linux-gnuabi64-gcc --version || echo "gcc not found"
+        mips64el-linux-gnuabi64-gcc --version
+        
+    - name: Download MIPS64el libraries from Debian ports
+      run: |
+        echo "=== 从Debian Ports下载MIPS64el库 ==="
+        
+        # 创建目录
+        mkdir -p deps/usr/lib/mips64el-linux-gnuabi64
+        mkdir -p deps/usr/bin
+        
+        # 添加Debian Ports源（用于下载MIPS64el包）
+        sudo tee /etc/apt/sources.list.d/debian-ports.list << 'EOF'
+        deb [arch=mips64el] http://deb.debian.org/debian-ports sid main
+        deb [arch=mips64el] http://deb.debian.org/debian-ports unreleased main
+        EOF
+        
+        sudo dpkg --add-architecture mips64el
+        sudo apt-get update || true
+        
+        # 下载MIPS64el架构的库文件
+        echo "下载必要的MIPS64el库..."
+        sudo apt-get install -y \
+          libasound2:mips64el \
+          libpulse0:mips64el \
+          libjson-c5:mips64el \
+          libssl3:mips64el \
+          libc6:mips64el \
+          libglib2.0-0:mips64el \
+          libsndfile1:mips64el \
+          libsystemd0:mips64el \
+          libgcrypt20:mips64el \
+          libgpg-error0:mips64el \
+          liblz4-1:mips64el \
+          libzstd1:mips64el \
+          libcap2:mips64el \
+          libffi8:mips64el \
+          libpcre2-8-0:mips64el \
+          libselinux1:mips64el \
+          libmount1:mips64el \
+          libuuid1:mips64el \
+          libz1:mips64el \
+          liblzma5:mips64el \
+          libgcc-s1:mips64el \
+          libstdc++6:mips64el \
+          alsa-utils:mips64el \
+          pulseaudio-utils:mips64el || true
+        
+        # 复制库文件到deps目录
+        echo "=== 复制库文件 ==="
+        if [ -d "/usr/lib/mips64el-linux-gnuabi64" ]; then
+          find /usr/lib/mips64el-linux-gnuabi64 -name "*.so*" -type f 2>/dev/null | while read lib; do
+            cp -v "$lib" deps/usr/lib/mips64el-linux-gnuabi64/ 2>/dev/null || true
+          done
+        fi
+        
+        # 复制二进制工具
+        if [ -f "/usr/bin/aplay" ]; then
+          cp /usr/bin/aplay deps/usr/bin/ 2>/dev/null || true
+        fi
+        if [ -f "/usr/bin/paplay" ]; then
+          cp /usr/bin/paplay deps/usr/bin/ 2>/dev/null || true
+        fi
+        if [ -f "/usr/bin/amixer" ]; then
+          cp /usr/bin/amixer deps/usr/bin/ 2>/dev/null || true
+        fi
+        if [ -f "/usr/bin/systemd-inhibit" ]; then
+          cp /usr/bin/systemd-inhibit deps/usr/bin/ 2>/dev/null || true
+        fi
+        
+        # 创建符号链接
+        cd deps/usr/lib/mips64el-linux-gnuabi64
+        for lib in *.so.*; do
+          if [ -f "$lib" ] && [ -n "$lib" ]; then
+            base_name=$(echo "$lib" | cut -d. -f1)
+            if [ ! -f "${base_name}.so" ] && [ ! -L "${base_name}.so" ]; then
+              ln -sf "$lib" "${base_name}.so" 2>/dev/null || true
+            fi
+          fi
+        done
+        cd ../../../..
+        
+        echo "=== 依赖下载完成 ==="
+        echo "库文件数量: $(find deps -name '*.so*' -type f 2>/dev/null | wc -l)"
+        echo "二进制文件: $(ls -1 deps/usr/bin/ 2>/dev/null | wc -l)"
+        du -sh deps
         
     - name: Generate SSL certificate
       run: |
@@ -106,7 +190,7 @@ jobs:
         HEADER_EOF
         
         # ============================================
-        # audio_worker.c
+        # audio_worker.c - 使用内置播放器
         # ============================================
         cat > src/audio_worker.c << 'AUDIO_EOF'
         #include "notification_client.h"
@@ -121,7 +205,7 @@ jobs:
         
         #define MAX_QUEUE 100
         #define MAX_WORKERS 4
-        #define PLAYER_PATH "/usr/lib/notification-client/bin"
+        #define BASE_PATH "/opt/notification-client"
         
         typedef struct {
             audio_job_t *jobs[MAX_QUEUE];
@@ -136,49 +220,35 @@ jobs:
         static int initialized = 0;
         static int volume = 80;
         static pthread_mutex_t vol_mutex = PTHREAD_MUTEX_INITIALIZER;
-        static int has_aplay = 0, has_paplay = 0;
-        
-        static void detect_players(void) {
-            char path[256];
-            snprintf(path, sizeof(path), "%s/aplay", PLAYER_PATH);
-            has_aplay = (access(path, X_OK) == 0);
-            if (!has_aplay) has_aplay = (access("/usr/bin/aplay", X_OK) == 0);
-            
-            snprintf(path, sizeof(path), "%s/paplay", PLAYER_PATH);
-            has_paplay = (access(path, X_OK) == 0);
-            if (!has_paplay) has_paplay = (access("/usr/bin/paplay", X_OK) == 0);
-            
-            syslog(LOG_INFO, "Players: aplay=%d, paplay=%d", has_aplay, has_paplay);
-        }
         
         static int play_audio(const char *filename, int force_wakeup) {
-            char player[256] = {0};
+            pid_t pid;
+            int status;
+            char player_path[256];
             
-            if (has_aplay) {
-                snprintf(player, sizeof(player), "%s/aplay", PLAYER_PATH);
-                if (access(player, X_OK) != 0) snprintf(player, sizeof(player), "/usr/bin/aplay");
-            } else if (has_paplay) {
-                snprintf(player, sizeof(player), "%s/paplay", PLAYER_PATH);
-                if (access(player, X_OK) != 0) snprintf(player, sizeof(player), "/usr/bin/paplay");
-            } else {
-                syslog(LOG_ERR, "No audio player");
-                return -1;
+            // 优先使用内置aplay
+            snprintf(player_path, sizeof(player_path), "%s/bin/aplay", BASE_PATH);
+            if (access(player_path, X_OK) != 0) {
+                snprintf(player_path, sizeof(player_path), "/usr/bin/aplay");
             }
             
-            pid_t pid = fork();
+            pid = fork();
             if (pid == 0) {
+                // 设置LD_LIBRARY_PATH使用内置库
                 char lib_path[512];
                 snprintf(lib_path, sizeof(lib_path), 
-                        "LD_LIBRARY_PATH=/usr/lib/notification-client:/usr/lib/mips64el-linux-gnuabi64:$LD_LIBRARY_PATH");
+                        "LD_LIBRARY_PATH=%s/lib/mips64el-linux-gnuabi64:$LD_LIBRARY_PATH", BASE_PATH);
                 putenv(lib_path);
+                
                 if (force_wakeup) {
                     execlp("systemd-inhibit", "systemd-inhibit", 
-                           "--why=Notification", "--mode=block", player, filename, NULL);
+                           "--why=Notification", "--mode=block", 
+                           player_path, filename, NULL);
                 }
-                execl(player, player, filename, NULL);
+                execl(player_path, player_path, filename, NULL);
                 exit(1);
             } else if (pid > 0) {
-                int status, timeout = 30;
+                int timeout = 30;
                 while (timeout > 0) {
                     if (waitpid(pid, &status, WNOHANG) > 0) {
                         return WIFEXITED(status) && WEXITSTATUS(status) == 0 ? 0 : -1;
@@ -195,7 +265,6 @@ jobs:
         
         static void* worker_thread(void *arg) {
             (void)arg;
-            detect_players();
             while (1) {
                 pthread_mutex_lock(&queue.mutex);
                 while (queue.count == 0) pthread_cond_wait(&queue.not_empty, &queue.mutex);
@@ -320,7 +389,7 @@ jobs:
         AUDIO_EOF
         
         # ============================================
-        # server.c - 修复：添加所有必要的头文件
+        # server.c
         # ============================================
         cat > src/server.c << 'SERVER_EOF'
         #include "notification_client.h"
@@ -502,7 +571,7 @@ jobs:
             
             if (strcmp(path, "/api/play") == 0) {
                 int force = (body && strstr(body, "force_wakeup")) ? 1 : 0;
-                int result = audio_play_async("/usr/share/notification-client/sounds/default.wav", force);
+                int result = audio_play_async("/opt/notification-client/share/sounds/default.wav", force);
                 snprintf(response, sizeof(response),
                         "{\"action\":\"play\",\"success\":%s,\"async\":true,\"protocol\":\"%s\"}",
                         result == 0 ? "true" : "false",
@@ -737,8 +806,9 @@ jobs:
         #include <sys/stat.h>
         
         #define DEFAULT_PORT 8080
-        #define DEFAULT_CERT "/etc/notification-client/server.crt"
-        #define DEFAULT_KEY "/etc/notification-client/server.key"
+        #define DEFAULT_CERT "/opt/notification-client/etc/server.crt"
+        #define DEFAULT_KEY "/opt/notification-client/etc/server.key"
+        #define BASE_PATH "/opt/notification-client"
         
         static int running = 1;
         
@@ -813,6 +883,7 @@ jobs:
             signal(SIGHUP, signal_handler);
             
             syslog(LOG_INFO, "Starting Notification Client v%s", VERSION);
+            syslog(LOG_INFO, "Base path: %s", BASE_PATH);
             
             server_t *s = server_create(port, workers, max_conn,
                                         access(cert, R_OK) == 0 ? cert : NULL,
@@ -881,54 +952,61 @@ jobs:
         make
         file notification-client
         
-    - name: Create DEB package
+    - name: Create DEB package with all embedded dependencies
       run: |
-        mkdir -p package/DEBIAN
+        # 安装路径：/opt/notification-client
+        mkdir -p package/opt/notification-client/bin
+        mkdir -p package/opt/notification-client/lib/mips64el-linux-gnuabi64
+        mkdir -p package/opt/notification-client/etc
+        mkdir -p package/opt/notification-client/share/sounds
         mkdir -p package/usr/bin
-        mkdir -p package/usr/lib/notification-client/bin
-        mkdir -p package/usr/lib/notification-client
-        mkdir -p package/etc/notification-client
-        mkdir -p package/usr/share/notification-client/sounds
         mkdir -p package/lib/systemd/system
-        mkdir -p package/usr/share/doc/notification-client
         
-        cp notification-client package/usr/bin/
-        ${STRIP} package/usr/bin/notification-client 2>/dev/null || true
+        # 复制主程序
+        cp notification-client package/opt/notification-client/bin/
+        ${STRIP} package/opt/notification-client/bin/notification-client 2>/dev/null || true
+        
+        # 复制启动脚本到/usr/bin
+        cat > package/usr/bin/notification-client << 'WRAPPER_EOF'
+        #!/bin/bash
+        export LD_LIBRARY_PATH=/opt/notification-client/lib/mips64el-linux-gnuabi64:$LD_LIBRARY_PATH
+        export PATH=/opt/notification-client/bin:$PATH
+        exec /opt/notification-client/bin/notification-client --cert /opt/notification-client/etc/server.crt --key /opt/notification-client/etc/server.key "$@"
+        WRAPPER_EOF
+        chmod 755 package/usr/bin/notification-client
+        
+        # 复制所有依赖库
+        if [ -d "deps/usr/lib/mips64el-linux-gnuabi64" ]; then
+          cp -r deps/usr/lib/mips64el-linux-gnuabi64/* package/opt/notification-client/lib/mips64el-linux-gnuabi64/ 2>/dev/null || true
+        fi
+        
+        # 复制二进制工具
+        if [ -d "deps/usr/bin" ]; then
+          cp deps/usr/bin/* package/opt/notification-client/bin/ 2>/dev/null || true
+        fi
+        chmod 755 package/opt/notification-client/bin/* 2>/dev/null || true
         
         # SSL证书
-        cp certs/server.crt package/etc/notification-client/
-        cp certs/server.key package/etc/notification-client/
-        chmod 600 package/etc/notification-client/server.key 2>/dev/null || true
-        chmod 644 package/etc/notification-client/server.crt 2>/dev/null || true
-        
-        # 启动脚本
-        cat > package/usr/bin/notification-client-wrapper << 'WRAPPER_EOF'
-        #!/bin/bash
-        export LD_LIBRARY_PATH=/usr/lib/notification-client:/usr/lib/mips64el-linux-gnuabi64:$LD_LIBRARY_PATH
-        export PATH=/usr/lib/notification-client/bin:$PATH
-        exec /usr/bin/notification-client --cert /etc/notification-client/server.crt --key /etc/notification-client/server.key "$@"
-        WRAPPER_EOF
-        chmod 755 package/usr/bin/notification-client-wrapper
+        cp certs/server.crt package/opt/notification-client/etc/
+        cp certs/server.key package/opt/notification-client/etc/
+        chmod 600 package/opt/notification-client/etc/server.key 2>/dev/null || true
+        chmod 644 package/opt/notification-client/etc/server.crt 2>/dev/null || true
         
         # 配置文件
-        cat > package/etc/notification-client/config.json << 'EOF'
+        cat > package/opt/notification-client/etc/config.json << 'EOF'
         {
-          "default_sound": "/usr/share/notification-client/sounds/default.wav",
+          "default_sound": "/opt/notification-client/share/sounds/default.wav",
           "default_volume": 80,
           "http_port": 8080,
           "https_port": 8443,
           "audio_device": "default",
-          "enable_wakeup": true,
-          "ssl": {
-            "cert": "/etc/notification-client/server.crt",
-            "key": "/etc/notification-client/server.key"
-          }
+          "enable_wakeup": true
         }
         EOF
         
         # 默认声音
         if command -v sox > /dev/null; then
-          sox -n package/usr/share/notification-client/sounds/default.wav synth 0.5 sine 800 2>/dev/null || true
+          sox -n package/opt/notification-client/share/sounds/default.wav synth 0.5 sine 800 2>/dev/null || true
         fi
         
         # systemd服务
@@ -942,9 +1020,9 @@ jobs:
         Type=simple
         User=nobody
         Group=nogroup
-        Environment="LD_LIBRARY_PATH=/usr/lib/notification-client:/usr/lib/mips64el-linux-gnuabi64"
-        Environment="PATH=/usr/lib/notification-client/bin:/usr/bin:/bin"
-        ExecStart=/usr/bin/notification-client-wrapper -d -p 8080 -w 4
+        Environment="LD_LIBRARY_PATH=/opt/notification-client/lib/mips64el-linux-gnuabi64"
+        Environment="PATH=/opt/notification-client/bin:/usr/bin:/bin"
+        ExecStart=/usr/bin/notification-client -d -p 8080 -w 4
         Restart=always
         RestartSec=10
         StandardOutput=syslog
@@ -955,23 +1033,8 @@ jobs:
         WantedBy=multi-user.target
         SERVICE_EOF
         
-        # 文档
-        cat > package/usr/share/doc/notification-client/README << 'README_EOF'
-        Notification Client for Kylin V10 (MIPS64el)
-        
-        支持HTTP和HTTPS双协议。
-        
-        端口:
-        - HTTP: 8080
-        - HTTPS: 8443
-        
-        使用:
-        sudo systemctl start notification-client
-        curl http://localhost:8080/api/status
-        curl -k https://localhost:8443/api/status
-        
-        浏览器访问: http://IP:8080 或 https://IP:8443
-        README_EOF
+        # DEBIAN控制文件
+        mkdir -p package/DEBIAN
         
     - name: Create DEBIAN control
       run: |
@@ -990,10 +1053,11 @@ jobs:
         Architecture: mips64el
         Maintainer: ${GITHUB_ACTOR} <${GITHUB_ACTOR}@users.noreply.github.com>
         Installed-Size: ${PKG_SIZE}
-        Depends: libc6 (>= 2.28), systemd, libssl3, libasound2, libpulse0
+        Depends: systemd
         Suggests: sox
         Description: Notification audio playback client for Kylin V10
          Full-featured notification client for Kylin V10 (MIPS64el).
+         All dependencies are embedded in /opt/notification-client.
          Features:
           - HTTP + HTTPS dual protocol support
           - Async audio playback with thread pool
@@ -1001,6 +1065,7 @@ jobs:
           - Force wakeup capability
           - Volume control
           - Self-signed SSL certificate included
+          - Fully offline installation
         Homepage: https://github.com/${GITHUB_REPOSITORY}
         CONTROL_EOF
         
@@ -1009,19 +1074,16 @@ jobs:
         set -e
         case "$1" in
             configure)
-                mkdir -p /etc/notification-client
-                mkdir -p /usr/share/notification-client/sounds
-                mkdir -p /usr/lib/notification-client/bin
+                mkdir -p /opt/notification-client/etc
+                mkdir -p /opt/notification-client/share/sounds
+                mkdir -p /opt/notification-client/lib/mips64el-linux-gnuabi64
+                mkdir -p /opt/notification-client/bin
                 
-                if [ -d /usr/lib/notification-client ] && [ "$(ls -A /usr/lib/notification-client 2>/dev/null)" ]; then
-                    echo "/usr/lib/notification-client" > /etc/ld.so.conf.d/notification-client.conf 2>/dev/null || true
-                    ldconfig 2>/dev/null || true
-                fi
+                chmod 600 /opt/notification-client/etc/server.key 2>/dev/null || true
                 
-                chmod 600 /etc/notification-client/server.key 2>/dev/null || true
-                
-                if [ ! -f /usr/share/notification-client/sounds/default.wav ] && command -v sox >/dev/null 2>&1; then
-                    sox -n /usr/share/notification-client/sounds/default.wav synth 0.5 sine 800 2>/dev/null || true
+                # 创建默认声音
+                if [ ! -f /opt/notification-client/share/sounds/default.wav ] && command -v sox >/dev/null 2>&1; then
+                    sox -n /opt/notification-client/share/sounds/default.wav synth 0.5 sine 800 2>/dev/null || true
                 fi
                 
                 systemctl daemon-reload 2>/dev/null || true
@@ -1040,8 +1102,6 @@ jobs:
             remove)
                 systemctl stop notification-client.service 2>/dev/null || true
                 systemctl disable notification-client.service 2>/dev/null || true
-                rm -f /etc/ld.so.conf.d/notification-client.conf 2>/dev/null || true
-                ldconfig 2>/dev/null || true
                 ;;
         esac
         exit 0
@@ -1060,7 +1120,7 @@ jobs:
         echo "=== DEB包大小 ==="
         ls -lh notification-client_${VERSION}_mips64el.deb
         echo "=== DEB包内容 ==="
-        dpkg-deb --contents notification-client_${VERSION}_mips64el.deb | head -30
+        dpkg-deb --contents notification-client_${VERSION}_mips64el.deb | head -40
         
     - name: Upload artifact
       uses: actions/upload-artifact@v4
