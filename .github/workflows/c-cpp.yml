@@ -17,26 +17,6 @@ jobs:
     - name: Checkout code
       uses: actions/checkout@v4
       
-    - name: Configure Ubuntu ports source
-      run: |
-        # 清理现有源
-        sudo rm -f /etc/apt/sources.list.d/*.list
-        
-        # 配置Ubuntu ports源
-        sudo tee /etc/apt/sources.list.d/ubuntu-ports.list << 'EOF'
-        deb [arch=mips64el] http://ports.ubuntu.com/ubuntu-ports jammy main universe
-        deb [arch=mips64el] http://ports.ubuntu.com/ubuntu-ports jammy-updates main universe
-        deb [arch=mips64el] http://ports.ubuntu.com/ubuntu-ports jammy-security main universe
-        EOF
-        
-        # 添加MIPS64el架构支持
-        sudo dpkg --add-architecture mips64el
-        
-        # 更新包列表
-        sudo apt-get update || true
-        
-        echo "=== 源配置完成 ==="
-        
     - name: Install cross-compilation toolchain
       run: |
         sudo apt-get update
@@ -64,6 +44,10 @@ jobs:
         echo "=== 验证交叉编译工具链 ==="
         mips64el-linux-gnuabi64-gcc --version 2>/dev/null || echo "gcc not found"
         
+        # 查找OpenSSL头文件位置
+        echo "=== 查找OpenSSL头文件 ==="
+        find /usr -name "opensslconf.h" 2>/dev/null | head -10
+        
     - name: Download MIPS64el dependencies
       run: |
         echo "=== 下载MIPS64el依赖库 ==="
@@ -71,9 +55,8 @@ jobs:
         mkdir -p deps/mips64el/usr/lib/notification-client
         mkdir -p deps/mips64el/usr/lib/notification-client/bin
         
+        # 从Ubuntu ports下载OpenSSL库
         cd /tmp
-        
-        # 下载OpenSSL库
         for pkg in libssl3 libcrypto3; do
           wget -q "http://ports.ubuntu.com/ubuntu-ports/pool/main/o/openssl/${pkg}_3.0.2-0ubuntu1_mips64el.deb" -O "${pkg}.deb" 2>/dev/null || true
           if [ -f "${pkg}.deb" ]; then
@@ -97,26 +80,29 @@ jobs:
           rm -rf temp_libc libc6.deb
         fi
         
-        # 下载音频库
-        for pkg in libpulse0 libasound2 libjson-c5; do
-          wget -q "http://ports.ubuntu.com/ubuntu-ports/pool/main/p/pulseaudio/${pkg}_13.99.1-1ubuntu3_mips64el.deb" -O "${pkg}.deb" 2>/dev/null || true
-          if [ -f "${pkg}.deb" ]; then
-            dpkg -x "${pkg}.deb" "temp_${pkg}/" 2>/dev/null || true
-            if [ -d "temp_${pkg}/usr/lib/mips64el-linux-gnuabi64" ]; then
-              cp -r "temp_${pkg}/usr/lib/mips64el-linux-gnuabi64/"* $OLDPWD/deps/mips64el/usr/lib/notification-client/ 2>/dev/null || true
-              echo "${pkg} 提取成功"
-            fi
-            rm -rf "temp_${pkg}" "${pkg}.deb"
+        cd $OLDPWD
+        
+        # 复制系统OpenSSL头文件
+        echo "=== 复制OpenSSL头文件 ==="
+        mkdir -p deps/mips64el/usr/include
+        
+        # 尝试多个可能的OpenSSL头文件路径
+        for inc_path in /usr/include /usr/include/x86_64-linux-gnu /usr/local/include; do
+          if [ -d "$inc_path/openssl" ]; then
+            cp -r "$inc_path/openssl" deps/mips64el/usr/include/
+            echo "从 $inc_path 复制OpenSSL头文件"
+            break
           fi
         done
         
-        cd $OLDPWD
-        
-        # 复制系统OpenSSL头文件（架构无关）
-        if [ -d "/usr/include/openssl" ]; then
-          mkdir -p deps/mips64el/usr/include
-          cp -r /usr/include/openssl deps/mips64el/usr/include/
-          echo "OpenSSL头文件复制完成"
+        # 如果找不到，安装openssl头文件
+        if [ ! -d "deps/mips64el/usr/include/openssl" ]; then
+          echo "安装openssl头文件..."
+          sudo apt-get install -y libssl-dev
+          if [ -d "/usr/include/openssl" ]; then
+            cp -r /usr/include/openssl deps/mips64el/usr/include/
+            echo "从/usr/include复制OpenSSL头文件"
+          fi
         fi
         
         echo "=== 依赖下载完成 ==="
@@ -129,7 +115,7 @@ jobs:
         
         cd /tmp
         
-        # 下载alsa-utils (包含aplay)
+        # 下载alsa-utils
         wget -q http://ports.ubuntu.com/ubuntu-ports/pool/main/a/alsa-utils/alsa-utils_1.2.6-1ubuntu1_mips64el.deb -O alsa-utils.deb 2>/dev/null || true
         if [ -f alsa-utils.deb ]; then
           dpkg -x alsa-utils.deb temp_alsa/ 2>/dev/null || true
@@ -140,7 +126,7 @@ jobs:
           rm -rf temp_alsa alsa-utils.deb
         fi
         
-        # 下载pulseaudio-utils (包含paplay)
+        # 下载pulseaudio-utils
         wget -q http://ports.ubuntu.com/ubuntu-ports/pool/main/p/pulseaudio/pulseaudio-utils_13.99.1-1ubuntu3_mips64el.deb -O pulseaudio-utils.deb 2>/dev/null || true
         if [ -f pulseaudio-utils.deb ]; then
           dpkg -x pulseaudio-utils.deb temp_pulse/ 2>/dev/null || true
@@ -153,7 +139,7 @@ jobs:
         
         cd $OLDPWD
         
-        # 备用：使用系统工具（非MIPS64el）
+        # 备用：使用系统工具
         if [ ! -f deps/mips64el/usr/lib/notification-client/bin/aplay ]; then
           if [ -f /usr/bin/aplay ]; then
             cp /usr/bin/aplay deps/mips64el/usr/lib/notification-client/bin/
@@ -476,6 +462,8 @@ jobs:
         #include <errno.h>
         #include <fcntl.h>
         #include <poll.h>
+        
+        // OpenSSL头文件
         #include <openssl/ssl.h>
         #include <openssl/err.h>
         
@@ -941,6 +929,11 @@ jobs:
         echo "AR=mips64el-linux-gnuabi64-ar" >> $GITHUB_ENV
         echo "STRIP=mips64el-linux-gnuabi64-strip" >> $GITHUB_ENV
         
+        # 添加头文件路径（指向deps中的OpenSSL头文件）
+        if [ -d "$PWD/deps/mips64el/usr/include" ]; then
+          echo "CPPFLAGS=-I$PWD/deps/mips64el/usr/include" >> $GITHUB_ENV
+        fi
+        
         # 添加库路径
         if [ -d "$PWD/deps/mips64el/usr/lib/notification-client" ]; then
           echo "LDFLAGS=-L$PWD/deps/mips64el/usr/lib/notification-client -lpthread -ldl -lssl -lcrypto" >> $GITHUB_ENV
@@ -959,6 +952,11 @@ jobs:
         
         CFLAGS = -Wall -O2 -march=mips64r2 -D_GNU_SOURCE -pthread
         LDFLAGS = -lpthread -ldl -lssl -lcrypto
+        
+        # 添加自定义头文件路径
+        ifneq ($(wildcard deps/mips64el/usr/include),)
+            CFLAGS += -I$(PWD)/deps/mips64el/usr/include
+        endif
         
         # 添加自定义库路径
         ifneq ($(wildcard deps/mips64el/usr/lib/notification-client),)
