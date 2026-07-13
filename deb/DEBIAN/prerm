@@ -1,0 +1,10 @@
+#!/bin/bash
+# prerm script for notification-player
+
+set -e
+
+echo "Stopping notification-player service..."
+systemctl stop notification-player.service
+systemctl disable notification-player.service
+
+exit 0
