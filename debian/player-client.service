@@ -1,20 +1,15 @@
 [Unit]
-Description=PlayerClient - 消息通知播放客户端
-Documentation=https://github.com/yourusername/player-client
+Description=PlayerClient - HTTP Audio Playback Server
+Documentation=https://github.com/playerclient/player-client
 After=network.target sound.target
-Wants=network.target sound.target
 
 [Service]
 Type=simple
-User=root
-Environment=DISPLAY=:0
-Environment=DBUS_SESSION_BUS_ADDRESS=unix:path=/run/dbus/system_bus_socket
 ExecStart=/usr/local/bin/player-client
 Restart=on-failure
-RestartSec=5
-StandardOutput=syslog
-StandardError=syslog
-SyslogIdentifier=player-client
+RestartSec=10
+StandardOutput=journal
+StandardError=journal
 
 [Install]
 WantedBy=multi-user.target
