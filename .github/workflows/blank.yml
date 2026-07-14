@@ -1,0 +1,109 @@
+name: Build MIPS64 DEB Package
+
+on:
+  push:
+    branches: [ main ]
+  pull_request:
+    branches: [ main ]
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v3
+    
+    - name: Setup MIPS64 cross-compilation toolchain
+      run: |
+        sudo apt-get update
+        sudo apt-get install -y \
+          gcc-mips64-linux-gnuabi64 \
+          g++-mips64-linux-gnuabi64 \
+          build-essential \
+          debhelper \
+          devscripts \
+          cmake \
+          pkg-config \
+          libgtk-3-dev:mips64 \
+          libnotify-dev:mips64 \
+          libcurl4-openssl-dev:mips64 \
+          libjson-c-dev:mips64 \
+          libmicrohttpd-dev:mips64 \
+          libao-dev:mips64 \
+          libmpg123-dev:mips64 \
+          libsystemd-dev:mips64 \
+          dh-systemd \
+          dpkg-dev
+    
+    - name: Setup MIPS64 multiarch
+      run: |
+        sudo dpkg --add-architecture mips64
+        sudo apt-get update
+        sudo apt-get install -y libc6-dev:mips64
+    
+    - name: Configure with CMake
+      run: |
+        mkdir build
+        cd build
+        cmake .. \
+          -DCMAKE_C_COMPILER=mips64-linux-gnuabi64-gcc \
+          -DCMAKE_CXX_COMPILER=mips64-linux-gnuabi64-g++ \
+          -DCMAKE_SYSTEM_NAME=Linux \
+          -DCMAKE_SYSTEM_PROCESSOR=mips64 \
+          -DCMAKE_BUILD_TYPE=Release
+    
+    - name: Build
+      run: |
+        cd build
+        make -j$(nproc)
+    
+    - name: Prepare DEB package structure
+      run: |
+        mkdir -p deb-package/usr/local/bin
+        mkdir -p deb-package/usr/local/lib/player-client
+        mkdir -p deb-package/usr/share/applications
+        mkdir -p deb-package/usr/share/player-client/sounds
+        mkdir -p deb-package/etc/player-client
+        mkdir -p deb-package/lib/systemd/system
+        mkdir -p deb-package/DEBIAN
+        
+        # Copy binary
+        cp build/player-client deb-package/usr/local/bin/
+        
+        # Copy service file
+        cp debian/player-client.service deb-package/lib/systemd/system/
+        
+        # Copy desktop file
+        cp debian/player-client.desktop deb-package/usr/share/applications/
+        
+        # Create default config
+        echo '{"port": 8080, "sound_dir": "/usr/share/player-client/sounds", "default_volume": 80}' > deb-package/etc/player-client/config.json
+        
+        # Create control file
+        cp debian/control deb-package/DEBIAN/
+        
+        # Create postinst and prerm scripts
+        cp debian/postinst deb-package/DEBIAN/
+        cp debian/prerm deb-package/DEBIAN/
+        chmod +x deb-package/DEBIAN/postinst deb-package/DEBIAN/prerm
+    
+    - name: Build DEB package
+      run: |
+        dpkg-deb --build deb-package player-client_1.0.2_mips64.deb
+    
+    - name: Upload artifact
+      uses: actions/upload-artifact@v3
+      with:
+        name: player-client-mips64-deb
+        path: player-client_1.0.2_mips64.deb
+    
+    - name: Create Release
+      uses: softprops/action-gh-release@v1
+      if: startsWith(github.ref, 'refs/tags/')
+      with:
+        files: player-client_1.0.2_mips64.deb
+        generate_release_notes: true
+      env:
+        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
