@@ -1,0 +1,10 @@
+#!/bin/bash
+set -e
+
+# Stop and disable systemd service before removal
+if [ -x "/bin/systemctl" ] && [ -f /lib/systemd/system/player-client.service ]; then
+    systemctl stop player-client.service || true
+    systemctl disable player-client.service || true
+fi
+
+#DEBHELPER#

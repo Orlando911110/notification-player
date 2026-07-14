@@ -1,0 +1,20 @@
+#!/usr/bin/make -f
+
+%:
+	dh $@ --buildsystem=cmake
+
+override_dh_auto_configure:
+	dh_auto_configure -- \
+		-DCMAKE_BUILD_TYPE=Release \
+		-DCMAKE_INSTALL_PREFIX=/usr/local
+
+override_dh_strip:
+	dh_strip --dbgsym-migration='player-client-dbg'
+
+override_dh_auto_install:
+	dh_auto_install
+	# Create necessary directories
+	mkdir -p debian/player-client/etc/player-client
+	mkdir -p debian/player-client/usr/share/player-client/sounds
+	# Create default config
+	echo '{"port": 8080, "sound_dir": "/usr/share/player-client/sounds", "default_volume": 80}' > debian/player-client/etc/player-client/config.json

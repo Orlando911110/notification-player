@@ -1,0 +1,10 @@
+[Desktop Entry]
+Type=Application
+Name=PlayerClient
+Comment=消息通知播放客户端
+Exec=/usr/local/bin/player-client
+Icon=audio-volume-high
+Terminal=false
+Categories=Audio;Player;Utility;
+X-GNOME-Autostart-enabled=true
+StartupNotify=true

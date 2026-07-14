@@ -1,0 +1,22 @@
+#!/bin/bash
+set -e
+
+# Enable and start systemd service
+if [ -x "/bin/systemctl" ]; then
+    systemctl daemon-reload
+    systemctl enable player-client.service
+    systemctl start player-client.service
+fi
+
+# Create default sounds directory with a test sound
+if [ ! -f /usr/share/player-client/sounds/default.wav ]; then
+    # Generate a simple WAV file as default notification sound
+    # This is a placeholder - in production, you'd include actual sound files
+    touch /usr/share/player-client/sounds/default.wav
+fi
+
+echo "PlayerClient has been installed successfully"
+echo "HTTP API is available at http://localhost:8080"
+echo "Service status: systemctl status player-client"
+
+#DEBHELPER#

@@ -1,0 +1,19 @@
+Package: player-client
+Version: 1.0.2
+Architecture: mips64
+Maintainer: PlayerClient Team <support@playerclient.com>
+Installed-Size: 200000
+Depends: libgtk-3-0 (>= 3.10), libnotify4 (>= 0.7), libcurl4, libjson-c4, libmicrohttpd12, libao4, libmpg123-0, systemd
+Section: sound
+Priority: optional
+Homepage: https://github.com/yourusername/player-client
+Description: 消息通知播放客户端
+ PlayerClient - 消息通知播放客户端，支持 HTTP API 远程触发音频播放。
+ 主要功能包括：
+  - HTTP RESTful API 远程控制音频播放
+  - 支持 MP3/WAV 音频格式
+  - 桌面通知集成
+  - 系统托盘图标支持
+  - 开机自启动 (systemd 服务)
+  - 音量控制
+  - CORS 支持
