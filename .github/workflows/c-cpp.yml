@@ -1,0 +1,246 @@
+name: Build MIPS64 DEB Package
+
+on:
+  push:
+    branches: [ main, master ]
+  pull_request:
+    branches: [ main, master ]
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: ubuntu-22.04
+    
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+    
+    - name: Setup MIPS64 cross-compilation environment
+      run: |
+        sudo apt-get update
+        sudo apt-get install -y \
+          gcc-mips64-linux-gnuabi64 \
+          g++-mips64-linux-gnuabi64 \
+          build-essential \
+          debhelper \
+          devscripts \
+          cmake \
+          pkg-config \
+          fakeroot \
+          dpkg-dev \
+          wget \
+          curl
+    
+    - name: Install MIPS64 development libraries
+      run: |
+        # Add MIPS64 architecture
+        sudo dpkg --add-architecture mips64
+        sudo apt-get update
+        
+        # Install essential MIPS64 libraries
+        sudo apt-get install -y \
+          libc6-dev:mips64 \
+          libgtk-3-dev:mips64 \
+          libnotify-dev:mips64 \
+          libcurl4-openssl-dev:mips64 \
+          libjson-c-dev:mips64 \
+          libmicrohttpd-dev:mips64 \
+          libao-dev:mips64 \
+          libmpg123-dev:mips64 || echo "Some packages may not be available"
+    
+    - name: Create CMake toolchain file
+      run: |
+        cat > toolchain-mips64.cmake << 'EOF'
+        set(CMAKE_SYSTEM_NAME Linux)
+        set(CMAKE_SYSTEM_PROCESSOR mips64)
+        
+        set(CMAKE_C_COMPILER mips64-linux-gnuabi64-gcc)
+        set(CMAKE_CXX_COMPILER mips64-linux-gnuabi64-g++)
+        
+        set(CMAKE_FIND_ROOT_PATH_MODE_PROGRAM NEVER)
+        set(CMAKE_FIND_ROOT_PATH_MODE_LIBRARY ONLY)
+        set(CMAKE_FIND_ROOT_PATH_MODE_INCLUDE ONLY)
+        
+        set(CMAKE_C_FLAGS "${CMAKE_C_FLAGS} -mabi=64" CACHE STRING "" FORCE)
+        set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -mabi=64" CACHE STRING "" FORCE)
+        EOF
+    
+    - name: Configure with CMake
+      run: |
+        mkdir -p build
+        cd build
+        cmake .. \
+          -DCMAKE_TOOLCHAIN_FILE=../toolchain-mips64.cmake \
+          -DCMAKE_BUILD_TYPE=Release \
+          -DCMAKE_INSTALL_PREFIX=/usr/local
+    
+    - name: Build
+      run: |
+        cd build
+        make -j$(nproc)
+    
+    - name: Prepare DEB package structure
+      run: |
+        PKG_DIR="player-client_1.0.2_mips64"
+        
+        # Create directory structure
+        mkdir -p "${PKG_DIR}/DEBIAN"
+        mkdir -p "${PKG_DIR}/usr/local/bin"
+        mkdir -p "${PKG_DIR}/usr/share/player-client/sounds"
+        mkdir -p "${PKG_DIR}/etc/player-client"
+        mkdir -p "${PKG_DIR}/lib/systemd/system"
+        mkdir -p "${PKG_DIR}/usr/share/applications"
+        mkdir -p "${PKG_DIR}/usr/share/doc/player-client"
+        
+        # Copy binary
+        cp build/player-client "${PKG_DIR}/usr/local/bin/"
+        chmod 755 "${PKG_DIR}/usr/local/bin/player-client"
+        
+        # Copy service file
+        cp debian/player-client.service "${PKG_DIR}/lib/systemd/system/"
+        
+        # Copy desktop file
+        cp debian/player-client.desktop "${PKG_DIR}/usr/share/applications/"
+        
+        # Create default config
+        cat > "${PKG_DIR}/etc/player-client/config.json" << EOF
+        {
+          "port": 8080,
+          "sound_dir": "/usr/share/player-client/sounds",
+          "default_volume": 80
+        }
+        EOF
+        
+        # Create a default WAV file
+        python3 -c "
+        import struct
+        import wave
+        try:
+            with wave.open('${PKG_DIR}/usr/share/player-client/sounds/default.wav', 'w') as f:
+                f.setnchannels(1)
+                f.setsampwidth(2)
+                f.setframerate(44100)
+                f.writeframes(struct.pack('h', 0) * 44100)
+        except:
+            pass
+        " || touch "${PKG_DIR}/usr/share/player-client/sounds/default.wav"
+        
+        # Calculate installed size
+        INSTALLED_SIZE=$(du -sk "${PKG_DIR}" | cut -f1)
+        
+        # Create control file
+        cat > "${PKG_DIR}/DEBIAN/control" << EOF
+        Package: player-client
+        Version: 1.0.2
+        Architecture: mips64
+        Maintainer: PlayerClient Team <support@playerclient.com>
+        Installed-Size: ${INSTALLED_SIZE}
+        Depends: libc6 (>= 2.17), systemd
+        Recommends: libgtk-3-0, libnotify4, libcurl4, libjson-c4, libmicrohttpd12, libao4, libmpg123-0
+        Section: sound
+        Priority: optional
+        Homepage: https://github.com/${GITHUB_REPOSITORY}
+        Description: 消息通知播放客户端
+         PlayerClient - 消息通知播放客户端，支持 HTTP API 远程触发音频播放。
+         .
+         主要功能包括：
+          - HTTP RESTful API 远程控制音频播放
+          - 支持 MP3/WAV 音频格式
+          - 桌面通知集成
+          - 系统托盘图标支持
+          - 开机自启动 (systemd 服务)
+          - 音量控制
+          - CORS 支持
+        EOF
+        
+        # Create postinst script
+        cat > "${PKG_DIR}/DEBIAN/postinst" << 'SCRIPT'
+        #!/bin/bash
+        set -e
+        
+        if [ -x "/sbin/ldconfig" ]; then
+            /sbin/ldconfig
+        fi
+        
+        if [ -x "/bin/systemctl" ]; then
+            systemctl daemon-reload
+            systemctl enable player-client.service || true
+            systemctl start player-client.service || true
+        fi
+        
+        echo ""
+        echo "PlayerClient 安装成功！"
+        echo "HTTP API 地址: http://localhost:8080"
+        echo "配置文件: /etc/player-client/config.json"
+        echo ""
+        
+        exit 0
+        SCRIPT
+        
+        # Create prerm script
+        cat > "${PKG_DIR}/DEBIAN/prerm" << 'SCRIPT'
+        #!/bin/bash
+        set -e
+        
+        if [ -x "/bin/systemctl" ] && [ -f /lib/systemd/system/player-client.service ]; then
+            systemctl stop player-client.service || true
+            systemctl disable player-client.service || true
+            systemctl daemon-reload
+        fi
+        
+        exit 0
+        SCRIPT
+        
+        # Make scripts executable
+        chmod 755 "${PKG_DIR}/DEBIAN/postinst" "${PKG_DIR}/DEBIAN/prerm"
+        
+        echo "DEB package structure created successfully"
+    
+    - name: Build DEB package
+      run: |
+        dpkg-deb --build player-client_1.0.2_mips64
+        
+        echo "Package info:"
+        dpkg-deb --info player-client_1.0.2_mips64.deb
+        
+        echo ""
+        echo "Package contents:"
+        dpkg-deb --contents player-client_1.0.2_mips64.deb
+    
+    - name: Create checksums
+      run: |
+        sha256sum player-client_1.0.2_mips64.deb > player-client_1.0.2_mips64.deb.sha256
+        md5sum player-client_1.0.2_mips64.deb > player-client_1.0.2_mips64.deb.md5
+    
+    - name: Upload DEB package
+      uses: actions/upload-artifact@v4
+      with:
+        name: player-client-mips64-deb
+        path: player-client_1.0.2_mips64.deb
+        retention-days: 30
+    
+    - name: Upload checksums
+      uses: actions/upload-artifact@v4
+      with:
+        name: player-client-checksums
+        path: |
+          player-client_1.0.2_mips64.deb.sha256
+          player-client_1.0.2_mips64.deb.md5
+        retention-days: 30
+    
+    - name: Create Release
+      if: startsWith(github.ref, 'refs/tags/')
+      uses: softprops/action-gh-release@v2
+      with:
+        name: PlayerClient v1.0.2
+        body: |
+          # PlayerClient v1.0.2 - MIPS64 版本
+          
+          ## 新增功能
+          - 完整 MIPS64 架构支持
+          - HTTP API 远程音频播放控制
+          - systemd 服务自动启动
+          
+          ## 安装方法
+          ```bash
+          sudo dpkg -i player-client_1.0.2_mips64.deb
